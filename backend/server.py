@@ -72,7 +72,7 @@ def _load_config() -> dict:
         "PUMPAPI_API_KEY": env.get("PUMPAPI_API_KEY", ""),
         "API_SERVER_KEY": env.get("API_SERVER_KEY", ""),
         "API_SERVER_HOST": env.get("API_SERVER_HOST", "127.0.0.1"),
-        "API_SERVER_PORT": env.get("API_SERVER_PORT", "5151"),
+        "API_SERVER_PORT": env.get("API_SERVER_PORT", "61317"),
     }
     if not cfg["PUMPAPI_API_KEY"] or not cfg["API_SERVER_KEY"]:
         log.warning("Missing PUMPAPI_API_KEY or API_SERVER_KEY in %s", HERMES_ENV)
