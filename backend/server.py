@@ -32,7 +32,7 @@ HERMES_ENV = Path(os.path.expanduser("~/.hermes/.env"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
-LISTEN_HOST = "0.0.0.0"
+LISTEN_HOST = "0.0.0.0" 
 LISTEN_PORT = 61318
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
