@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>PumpApi Agent — Sign in</title>
+  <link rel="icon" type="image/webp" href="/assets/logo.webp" />
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body class="login-body">
+  <div class="login-card">
+    <div class="login-logo"><img src="/assets/logo.webp" alt="PumpApi" /></div>
+    <h1>PumpApi Agent</h1>
+    <p class="login-sub">Sign in with your access key.</p>
+    <form id="login-form">
+      <input type="password" id="identifier" placeholder="Identifier" autocomplete="off" autofocus />
+      <button type="submit" id="signin-btn">Sign in</button>
+    </form>
+    <div class="login-error" id="err"></div>
+  </div>
+  <script>
+    const f = document.getElementById('login-form');
+    const err = document.getElementById('err');
+    const btn = document.getElementById('signin-btn');
+    f.addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      err.textContent = '';
+      btn.disabled = true;
+      const identifier = document.getElementById('identifier').value.trim();
+      try {
+        const r = await fetch('/api/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ identifier }),
+        });
+        if (r.ok) {
+          window.location.href = '/';
+        } else {
+          err.textContent = 'Invalid key. Please try again.';
+          btn.disabled = false;
+        }
+      } catch (e) {
+        err.textContent = 'Network error: ' + e.message;
+        btn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
