@@ -483,6 +483,11 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 /* ---- Confirm dialog ---- */
 .confirm-modal { width: 380px; }
 .confirm-modal p { margin: 0 0 16px; }
+/* Confirm sits on top of EVERY other modal — its prompt is the active
+   user decision, so it must visually win over settings sub-modals.
+   Without this the settings backdrop drew over the confirm dialog and
+   click-on-backdrop closed the confirm before the user could act. */
+.modal-backdrop:has(> .confirm-modal) { z-index: 200; }
 
 /* ---- Loading dots ---- */
 .loading-dots::after {
@@ -595,3 +600,152 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 .error-banner.banner-info .error-banner-title { color: #6fdc8c; }
 .error-banner.banner-info .error-banner-detail { color: #c8e6d4; }
 .error-banner.banner-info .error-banner-close { color: #b9f2cf; }
+
+/* ---- Settings hub: tiles + sub-panel sections ---------------------------
+   The hub stays a single tall modal; sub-modals stack on top of it via
+   higher z-index from being later in the DOM. Reusing existing .modal /
+   .modal-backdrop — we only add layout primitives (tiles, hint, sections). */
+.modal.settings-hub { width: 600px; }
+.modal.modal-wide { width: 720px; }
+
+.settings-section-title {
+  margin: 18px 0 6px;
+  font-size: 12px; font-weight: 600;
+  color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px;
+}
+.settings-section-title:first-of-type { margin-top: 4px; }
+
+.settings-hint {
+  margin: 0 0 12px;
+  font-size: 13px; color: var(--text-dim); line-height: 1.5;
+}
+.settings-hint a { color: var(--accent); }
+.settings-hint code {
+  background: rgba(255,255,255,0.05); padding: 1px 5px;
+  border-radius: 4px; font-size: 12px;
+}
+.settings-steps {
+  margin: 0 0 14px; padding-left: 22px;
+  font-size: 13px; color: var(--text-dim); line-height: 1.55;
+}
+.settings-steps li { margin-bottom: 6px; }
+.settings-steps a { color: var(--accent); }
+.settings-steps code {
+  background: rgba(255,255,255,0.05); padding: 1px 5px;
+  border-radius: 4px; font-size: 12px;
+}
+.settings-steps strong { color: var(--text); font-weight: 600; }
+
+.settings-tiles {
+  display: grid; gap: 8px; margin-bottom: 4px;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+}
+.settings-tile {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 14px; border-radius: 10px;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid var(--border);
+  color: inherit; cursor: pointer;
+  text-align: left; font: inherit; width: 100%;
+  transition: background 0.12s, border-color 0.12s;
+}
+.settings-tile:hover {
+  background: rgba(255,255,255,0.06);
+  border-color: var(--accent);
+}
+.settings-tile .tile-icon { font-size: 22px; line-height: 1; flex: 0 0 auto; }
+.settings-tile .tile-body { flex: 1 1 auto; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.settings-tile .tile-title { font-size: 14px; font-weight: 600; }
+.settings-tile .tile-sub { font-size: 12px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.settings-tile .tile-badge {
+  width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto;
+}
+.settings-tile .tile-badge.on  { background: #4ade80; box-shadow: 0 0 6px rgba(74,222,128,0.6); }
+.settings-tile .tile-badge.off { background: #555; }
+
+/* Messenger tiles get a slight emphasis — they are the headline action. */
+.settings-tile.messenger { padding: 14px 16px; }
+.settings-tile.messenger .tile-title { font-size: 15px; }
+
+/* Memory / skill preview / skill paste — reuses a tall textarea. */
+.memory-editor {
+  width: 100%; min-height: 320px; max-height: 60vh;
+  padding: 10px 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px; line-height: 1.5;
+  background: rgba(0,0,0,0.25); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px;
+  resize: vertical;
+}
+.memory-editor[readonly] { color: var(--text-dim); }
+
+/* Skill list / MCP list — generic row pattern. */
+.skills-list {
+  display: flex; flex-direction: column; gap: 4px;
+  max-height: 50vh; overflow-y: auto;
+  margin-bottom: 12px;
+}
+.skill-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px; border-radius: 8px;
+  border: 1px solid transparent;
+  background: rgba(255,255,255,0.02);
+}
+.skill-row:hover { background: rgba(255,255,255,0.05); border-color: var(--border); }
+.skill-meta { flex: 1 1 auto; cursor: pointer; min-width: 0; }
+.skill-name { font-size: 13px; font-weight: 500; }
+.skill-name .skill-cat {
+  font-size: 11px; color: var(--text-dim); margin-left: 6px;
+  background: rgba(255,255,255,0.06); padding: 1px 6px; border-radius: 4px;
+}
+.skill-desc { font-size: 12px; color: var(--text-dim); margin-top: 2px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.icon-btn {
+  background: transparent; border: none; cursor: pointer;
+  padding: 6px 8px; border-radius: 6px; font-size: 14px;
+  color: var(--text-dim);
+}
+.icon-btn:hover { background: rgba(255,255,255,0.08); color: var(--text); }
+.icon-btn.danger:hover { background: rgba(239,68,68,0.15); color: #fca5a5; }
+
+/* Inline action button used inside hint text — looks like a link. */
+.link-btn {
+  background: transparent; border: none; color: var(--accent);
+  cursor: pointer; padding: 0; font: inherit;
+}
+.link-btn:hover { text-decoration: underline; }
+
+/* Tab bar for skill importer (paste vs github). */
+.tab-bar {
+  display: flex; gap: 4px; margin-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.tab-bar button {
+  background: transparent; border: none; color: var(--text-dim);
+  padding: 8px 14px; cursor: pointer; font: inherit;
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.tab-bar button:hover { color: var(--text); }
+.tab-bar button.active {
+  color: var(--accent); border-bottom-color: var(--accent);
+}
+
+/* Tools list — checkboxes with name + label. */
+.tools-list {
+  display: flex; flex-direction: column; gap: 2px;
+  max-height: 55vh; overflow-y: auto; margin-bottom: 12px;
+}
+.tool-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px; border-radius: 6px;
+  cursor: pointer;
+}
+.tool-row:hover { background: rgba(255,255,255,0.04); }
+.tool-row input[type=checkbox] { flex: 0 0 auto; }
+.tool-label { flex: 1 1 auto; font-size: 13px; }
+.tool-name {
+  font-family: ui-monospace, monospace; font-size: 11px;
+  color: var(--text-dim); background: rgba(255,255,255,0.04);
+  padding: 1px 6px; border-radius: 4px;
+}

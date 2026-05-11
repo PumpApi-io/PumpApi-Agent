@@ -121,7 +121,9 @@ const App = {
     const activeChatId = ref(null);
     const messages = ref([]);
     const models = ref([]);
-    const selectedModel = ref(localStorage.getItem('papi_model') || 'hermes-agent');
+    // selectedModel is hydrated from hermes config (source of truth) in loadModels().
+    // We start empty so the dropdown doesn't briefly flash a wrong/stale value.
+    const selectedModel = ref('');
     const draft = ref('');
     const draftAttachments = ref([]); // [{kind:'image'|'text', filename, dataUri?, text?, size}]
     const streaming = ref(false);
@@ -168,6 +170,24 @@ const App = {
     });
     const apiKey = ref('');
     const apiKeyVisible = ref(false);
+
+    // ---- Settings hub state ----
+    // panel: null = hub view; 'telegram'|'discord'|'whatsapp'|'memory'|'skills'|'tools'|'mcp' = sub-modal
+    const panel = ref(null);
+    // Memory editor: {target:'MEMORY'|'USER', content, dirty}
+    const memEditor = ref(null);
+    // Skills list + import form
+    const skillsList = ref([]);
+    const skillsLoading = ref(false);
+    const skillImporter = ref(null); // {source, name, content, url, busy}
+    const skillPreview = ref(null);   // {name, content}
+    // Tools (built-in toolsets)
+    const toolsList = ref([]);
+    const toolsLoading = ref(false);
+    // MCP servers
+    const mcpList = ref([]);
+    const mcpEmpty = ref(true);
+    const mcpForm = ref(null); // {name, url, busy}
 
     let abortController = null;
     let pasteCounter = 0;
@@ -250,6 +270,11 @@ const App = {
       if (e.key === 'Escape') {
         if (lightboxUrl.value) lightboxUrl.value = null;
         else if (textPreview.value) textPreview.value = null;
+        else if (skillPreview.value) skillPreview.value = null;
+        else if (skillImporter.value && !skillImporter.value.busy) skillImporter.value = null;
+        else if (mcpForm.value && !mcpForm.value.busy) mcpForm.value = null;
+        else if (memEditor.value) memEditor.value = null;
+        else if (panel.value) panel.value = null;
         else if (settingsOpen.value) settingsOpen.value = false;
         else if (confirm.value) confirm.value = null;
         else if (popoverChatId.value) popoverChatId.value = null;
@@ -264,17 +289,49 @@ const App = {
 
     async function loadModels() {
       try {
-        const m = await api('/api/models');
-        if (Array.isArray(m) && m.length) {
-          models.value = m;
-          if (!m.find(x => x.id === selectedModel.value)) {
-            selectedModel.value = m[0].id;
-            localStorage.setItem('papi_model', selectedModel.value);
-          }
+        // Fetch list and current selection in parallel. Current model comes
+        // from hermes config (model.default), not localStorage — config is
+        // the only thing api_server actually reads at startup.
+        const [m, cur] = await Promise.all([api('/api/models'), api('/api/model')]);
+        if (Array.isArray(m) && m.length) models.value = m;
+        const fromCfg = (cur && cur.model) || '';
+        if (fromCfg) {
+          selectedModel.value = fromCfg;
+        } else if (models.value.length) {
+          selectedModel.value = models.value[0].id;
         }
       } catch (e) { /* ignore */ }
     }
-    watch(selectedModel, (v) => localStorage.setItem('papi_model', v));
+
+    // Switching model rewrites hermes config + restarts the hermes-gateway,
+    // because api_server reads model.default once at startup. Any in-flight
+    // streams get killed by the gateway restart, so we warn the user first.
+    function onModelChange(e) {
+      const newModel = e.target.value;
+      const prev = selectedModel.value;
+      if (newModel === prev) return;
+      e.target.value = prev; // keep dropdown on old value until user confirms
+      const warn = streaming.value
+        ? `Switching the model will restart the agent and abort the response that's currently being generated. The new model also applies to every linked messenger (Telegram / Discord / WhatsApp). Continue?`
+        : `Switching the model will briefly restart the agent (a few seconds) and apply to every linked messenger (Telegram / Discord / WhatsApp). Continue?`;
+      confirm.value = {
+        message: warn,
+        confirmLabel: 'Switch',
+        danger: false,
+        onYes: async () => {
+          confirm.value = null;
+          if (streaming.value) abortStream();
+          selectedModel.value = newModel;
+          try {
+            await api('/api/model', { method: 'POST', body: JSON.stringify({ model: newModel }) });
+            toast(`Model switched to ${newModel}`);
+          } catch (err) {
+            toast(`Failed to switch model: ${err.message || err}`, 'error');
+            selectedModel.value = prev;
+          }
+        },
+      };
+    }
 
     // ---- Chat list pagination + search ----
     //
@@ -377,7 +434,44 @@ const App = {
       chats.value.splice(lo, 0, chat);
     }
 
+    // Polls the active chat's messages so a tab that reloaded mid-stream
+    // catches up to the still-running generation in the backend. Stops when
+    // the last assistant message stops growing for N polls, or when the user
+    // navigates away. One handle, replaced on each openChat.
+    let pollHandle = null;
+    function stopPolling() {
+      if (pollHandle) { clearInterval(pollHandle); pollHandle = null; }
+    }
+    function startPollingFor(chatId) {
+      stopPolling();
+      let lastLen = -1;
+      let stableTicks = 0;
+      let ticks = 0;
+      pollHandle = setInterval(async () => {
+        ticks += 1;
+        if (activeChatId.value !== chatId || streaming.value || ticks > 600) {
+          stopPolling();
+          return;
+        }
+        try {
+          const ms = await api(`/api/chats/${chatId}/messages`);
+          messages.value = ms;
+          const last = ms[ms.length - 1];
+          if (!last || last.role !== 'assistant') { stopPolling(); return; }
+          const len = (last.content || '').length;
+          if (len === lastLen) {
+            stableTicks += 1;
+            if (stableTicks >= 3) stopPolling();
+          } else {
+            stableTicks = 0;
+            lastLen = len;
+          }
+        } catch (e) { /* keep trying */ }
+      }, 1000);
+    }
+
     async function openChat(id) {
+      stopPolling();
       activeChatId.value = id;
       sidebarOpen.value = false;
       messages.value = [];
@@ -389,6 +483,13 @@ const App = {
         messages.value = ms;
         await nextTick();
         scrollToBottom();
+        // If the tail is an assistant message that may still be streaming on
+        // the backend (recent + reasonable length is allowed to grow), poll
+        // until it stops changing.
+        const last = ms[ms.length - 1];
+        if (last && last.role === 'assistant' && (Date.now() / 1000 - (last.created_at || 0) < 300)) {
+          startPollingFor(id);
+        }
       } catch (e) { /* ignore */ }
     }
 
@@ -846,6 +947,26 @@ const App = {
       return !!expandedTools[m.id];
     }
 
+    // ---- Copy message text to clipboard ----
+    async function copyMessage(m) {
+      const text = m.content || '';
+      try {
+        await navigator.clipboard.writeText(text);
+        toast('Copied');
+      } catch (e) {
+        // Fallback for non-secure contexts / older browsers
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand('copy'); toast('Copied'); }
+        catch (_) { toast('Copy failed', 'error'); }
+        document.body.removeChild(ta);
+      }
+    }
+
     // Delegated click handler for the chat area: when the user clicks on an
     // inline MEDIA: image rendered via v-html, open it in the lightbox.
     function onChatClick(ev) {
@@ -866,25 +987,237 @@ const App = {
         const me = await api('/api/me');
         apiKey.value = me.api_key || '';
       } catch (e) {}
+      panel.value = null;
       settingsOpen.value = true;
     }
-    async function saveSettings() {
+
+    // Save a subset of settings keys (used by per-platform sub-modals). We POST
+    // ALL settings — backend only restarts the gateway if a value actually
+    // changed, so this is safe to call from any panel.
+    async function saveSection(label) {
       try {
         const r = await api('/api/settings', { method: 'POST', body: JSON.stringify({ ...settings }) });
-        if (r && r.changed && r.changed.length) {
-          if (r.gateway_restarted) {
-            toast(`Saved · gateway restarted (${r.changed.join(', ')})`);
-          } else {
-            toast(`Saved, but gateway restart failed: ${r.gateway_error || 'unknown'}`, 'error');
-          }
+        const changed = (r && r.updated) || [];
+        const restarted = (r && r.restarted) || [];
+        if (changed.length === 0) {
+          toast('No changes');
+        } else if (restarted.length) {
+          toast(`${label} saved · gateway restarted`);
+        } else if (r && r.restart_errors) {
+          toast(`Saved, but gateway restart failed`, 'error');
         } else {
-          toast('Saved (no changes)');
+          toast(`${label} saved`);
         }
+        panel.value = null;
       } catch (e) {
         toast(`Save failed: ${e.message || e}`, 'error');
+      }
+    }
+
+    // ---- Messenger connection status ----
+    // A messenger is "linked" if its primary required field is non-empty.
+    const messengerStatus = computed(() => ({
+      telegram: !!settings.TELEGRAM_BOT_TOKEN,
+      discord:  !!settings.DISCORD_BOT_TOKEN,
+      whatsapp: !!(settings.WHATSAPP_ACCOUNT_SID && settings.WHATSAPP_AUTH_TOKEN),
+    }));
+
+    // ---- Memory editor ----
+    async function openMemory(target) {
+      try {
+        const r = await api(`/api/memory/${target}`);
+        memEditor.value = { target, content: r.content || '', original: r.content || '' };
+        panel.value = 'memory';
+      } catch (e) {
+        toast(`Failed to load: ${e.message || e}`, 'error');
+      }
+    }
+    async function saveMemory() {
+      const m = memEditor.value;
+      if (!m) return;
+      try {
+        await api(`/api/memory/${m.target}`, { method: 'PUT', body: JSON.stringify({ content: m.content }) });
+        toast('Memory saved');
+        memEditor.value = null;
+      } catch (e) {
+        toast(`Save failed: ${e.message || e}`, 'error');
+      }
+    }
+
+    // ---- Skills ----
+    async function openSkills() {
+      panel.value = 'skills';
+      skillsLoading.value = true;
+      try {
+        const r = await api('/api/skills');
+        skillsList.value = r.items || [];
+      } catch (e) {
+        toast(`Failed to load skills: ${e.message || e}`, 'error');
+      } finally {
+        skillsLoading.value = false;
+      }
+    }
+    async function viewSkill(name) {
+      try {
+        const r = await api(`/api/skills/${encodeURIComponent(name)}`);
+        // Track original separately so we can detect "dirty" state and confirm
+        // discarding edits — and so non-bundled skills become editable in place.
+        skillPreview.value = {
+          name,
+          content: r.content || '',
+          original: r.content || '',
+          editable: !!r.editable,
+          saving: false,
+        };
+      } catch (e) {
+        toast(`Failed to load skill: ${e.message || e}`, 'error');
+      }
+    }
+    async function saveSkillEdit() {
+      const p = skillPreview.value;
+      if (!p || p.saving || !p.editable) return;
+      p.saving = true;
+      try {
+        await api(`/api/skills/${encodeURIComponent(p.name)}`, {
+          method: 'PUT',
+          body: JSON.stringify({ content: p.content }),
+        });
+        toast('Skill saved');
+        p.original = p.content;
+        skillPreview.value = null;
+      } catch (e) {
+        toast(`Save failed: ${e.message || e}`, 'error');
+      } finally {
+        if (skillPreview.value) skillPreview.value.saving = false;
+      }
+    }
+    function closeSkillPreview() {
+      const p = skillPreview.value;
+      if (p && p.editable && p.content !== p.original) {
+        confirm.value = {
+          message: 'Discard unsaved changes?',
+          confirmLabel: 'Discard',
+          onYes: () => { confirm.value = null; skillPreview.value = null; },
+        };
         return;
       }
-      settingsOpen.value = false;
+      skillPreview.value = null;
+    }
+    function startSkillImport() {
+      skillImporter.value = { source: 'paste', name: '', content: '', url: '', busy: false };
+    }
+    async function submitSkillImport() {
+      const f = skillImporter.value;
+      if (!f || f.busy) return;
+      f.busy = true;
+      try {
+        const body = f.source === 'paste'
+          ? { source: 'paste', name: f.name.trim(), content: f.content }
+          : { source: 'github', url: f.url.trim() };
+        await api('/api/skills', { method: 'POST', body: JSON.stringify(body) });
+        toast('Skill installed');
+        skillImporter.value = null;
+        await openSkills(); // refresh list
+      } catch (e) {
+        toast(`Install failed: ${e.message || e}`, 'error');
+      } finally {
+        if (skillImporter.value) skillImporter.value.busy = false;
+      }
+    }
+    function deleteSkill(name) {
+      confirm.value = {
+        message: `Delete skill "${name}"? This removes the local copy; hub skills can be reinstalled.`,
+        onYes: async () => {
+          // Close confirm + drop from list optimistically — request can take
+          // a while (gateway restart), don't make the user stare at a frozen modal.
+          confirm.value = null;
+          const prev = skillsList.value;
+          skillsList.value = prev.filter(s => s.name !== name);
+          try {
+            await api(`/api/skills/${encodeURIComponent(name)}`, { method: 'DELETE' });
+            toast('Skill removed');
+          } catch (e) {
+            skillsList.value = prev;  // rollback on failure
+            toast(`Delete failed: ${e.message || e}`, 'error');
+          }
+        },
+      };
+    }
+
+    // ---- Tools ----
+    async function openTools() {
+      panel.value = 'tools';
+      toolsLoading.value = true;
+      try {
+        const r = await api('/api/tools');
+        toolsList.value = r.items || [];
+      } catch (e) {
+        toast(`Failed to load tools: ${e.message || e}`, 'error');
+      } finally {
+        toolsLoading.value = false;
+      }
+    }
+    async function toggleTool(t) {
+      const target = !t.enabled;
+      // Optimistic update — revert on failure
+      t.enabled = target;
+      try {
+        await api('/api/tools/toggle', { method: 'POST', body: JSON.stringify({ name: t.name, enable: target }) });
+      } catch (e) {
+        t.enabled = !target;
+        toast(`Failed: ${e.message || e}`, 'error');
+      }
+    }
+
+    // ---- MCP ----
+    async function openMcp() {
+      panel.value = 'mcp';
+      try {
+        const r = await api('/api/mcp');
+        mcpList.value = r.servers || [];
+        mcpEmpty.value = !!r.empty;
+      } catch (e) {
+        toast(`Failed to load: ${e.message || e}`, 'error');
+      }
+    }
+    // Optional preset args — DeepWiki tile pre-fills the form so the user
+    // can just hit Add. Empty call = blank form.
+    function startMcpAdd(name, url) {
+      mcpForm.value = { name: name || '', url: url || '', busy: false };
+    }
+    async function submitMcpAdd() {
+      const f = mcpForm.value;
+      if (!f || f.busy) return;
+      f.busy = true;
+      try {
+        const r = await api('/api/mcp', { method: 'POST', body: JSON.stringify({ name: f.name.trim(), url: f.url.trim() }) });
+        toast(r.restarted ? 'MCP server added (agent restarted)' : 'MCP server added');
+        mcpForm.value = null;
+        await openMcp();
+      } catch (e) {
+        toast(`Add failed: ${e.message || e}`, 'error');
+      } finally {
+        if (mcpForm.value) mcpForm.value.busy = false;
+      }
+    }
+    function removeMcp(name) {
+      confirm.value = {
+        message: `Remove MCP server "${name}"?`,
+        onYes: async () => {
+          confirm.value = null;
+          const prev = mcpList.value;
+          mcpList.value = prev.filter(s => (s.name || s) !== name);
+          mcpEmpty.value = !mcpList.value.length;
+          try {
+            const r = await api(`/api/mcp/${encodeURIComponent(name)}`, { method: 'DELETE' });
+            toast(r.restarted ? 'Removed (agent restarted)' : 'Removed');
+          } catch (e) {
+            mcpList.value = prev;
+            mcpEmpty.value = !prev.length;
+            toast(`Remove failed: ${e.message || e}`, 'error');
+          }
+        },
+      };
     }
 
     // ---- Render helpers ----
@@ -905,6 +1238,13 @@ const App = {
       popoverChatId, renamingChatId, renameValue,
       editingMessageId, editingValue,
       settings, apiKey, apiKeyVisible,
+      // settings hub
+      panel, messengerStatus,
+      memEditor, openMemory, saveMemory,
+      skillsList, skillsLoading, skillImporter, skillPreview,
+      openSkills, viewSkill, saveSkillEdit, closeSkillPreview, startSkillImport, submitSkillImport, deleteSkill,
+      toolsList, toolsLoading, openTools, toggleTool,
+      mcpList, mcpEmpty, mcpForm, openMcp, startMcpAdd, submitMcpAdd, removeMcp,
       liveAssistant,
       textareaRef, chatAreaRef,
       // chat-list pagination + virtual scroll
@@ -922,9 +1262,10 @@ const App = {
       editingAttachments, onChatClick,
       sidebarOpen, toggleSidebar, closeSidebar,
       errorBanner, dismissError,
-      openSettings, saveSettings, maskedKey,
+      openSettings, saveSection, maskedKey,
       renderMarkdown, escapeHtml,
       switchVersion, toggleTools, isToolsExpanded,
+      onModelChange, copyMessage,
     };
   },
 
@@ -986,7 +1327,7 @@ const App = {
       <main class="main">
         <div class="header">
           <button class="icon-btn hamburger-btn" title="Menu" @click="toggleSidebar">☰</button>
-          <select class="model-select" v-model="selectedModel">
+          <select class="model-select" :value="selectedModel" @change="onModelChange">
             <option v-for="m in models" :key="m.id" :value="m.id">{{ m.id }}</option>
           </select>
           <div class="spacer"></div>
@@ -1044,12 +1385,15 @@ const App = {
                   </span>
                 </template>
               </div>
-              <div v-if="m.role === 'user' && editingMessageId !== m.id" class="msg-actions">
+              <div v-if="editingMessageId !== m.id" class="msg-actions">
                 <span v-if="m.created_at" class="msg-timestamp" :title="formatTimestamp(m.created_at, true)">{{ formatTimestamp(m.created_at) }}</span>
-                <button class="icon-action" @click="startEdit(m)" title="Edit">
+                <button class="icon-action" @click="copyMessage(m)" title="Copy">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                </button>
+                <button v-if="m.role === 'user'" class="icon-action" @click="startEdit(m)" title="Edit">
                   <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
                 </button>
-                <span v-if="m.version_count && m.version_count > 1" class="version-nav">
+                <span v-if="m.role === 'user' && m.version_count && m.version_count > 1" class="version-nav">
                   <button class="icon-action" @click="switchVersion(m, -1)" :disabled="(m.version_index ?? 0) === 0" title="Previous version">‹</button>
                   <span class="version-counter">{{ (m.version_index ?? 0) + 1 }}/{{ m.version_count }}</span>
                   <button class="icon-action" @click="switchVersion(m, +1)" :disabled="(m.version_index ?? 0) >= m.version_count - 1" title="Next version">›</button>
@@ -1146,66 +1490,325 @@ const App = {
           <p>{{ confirm.message }}</p>
           <div class="modal-actions">
             <button @click="confirm = null">Cancel</button>
-            <button class="primary danger" @click="confirm.onYes">Delete</button>
+            <button :class="confirm.danger === false ? 'primary' : 'primary danger'" @click="confirm.onYes">{{ confirm.confirmLabel || 'Delete' }}</button>
           </div>
         </div>
       </div>
 
-      <!-- Settings modal -->
+      <!-- Settings hub: tiles → sub-modals.
+           Top section pushes messenger linking as the headline action;
+           memory/skills/tools/mcp are secondary tiles. -->
       <div v-if="settingsOpen" class="modal-backdrop" @click="settingsOpen = false">
-        <div class="modal" @click.stop>
+        <div class="modal settings-hub" @click.stop>
           <h2>Settings</h2>
 
-          <h3>Telegram</h3>
-          <div class="field">
-            <label>Bot Token <span class="help-tip" data-tip="Create a bot via @BotFather on Telegram → /newbot → copy the HTTP API token.">?</span></label>
-            <input type="text" v-model="settings.TELEGRAM_BOT_TOKEN" placeholder="123456:ABC-..." />
-          </div>
-          <div class="field">
-            <label>Allowed Users <span class="help-tip" data-tip="Comma-separated Telegram user IDs allowed to chat with the bot. Get yours from @userinfobot. Example: 123456789,987654321. Leave empty to allow anyone (not recommended).">?</span></label>
-            <input type="text" v-model="settings.TELEGRAM_ALLOWED_USERS" placeholder="123456789,987654321" />
-          </div>
-
-          <h3>Discord</h3>
-          <div class="field">
-            <label>Bot Token <span class="help-tip" data-tip="Create an app at https://discord.com/developers/applications → Bot → Reset Token. Enable Message Content intent.">?</span></label>
-            <input type="text" v-model="settings.DISCORD_BOT_TOKEN" placeholder="MTk0..." />
-          </div>
-          <div class="field">
-            <label>Allowed Users <span class="help-tip" data-tip="Comma-separated Discord user IDs allowed to DM/mention the bot. Enable Developer Mode in Discord settings → right-click your name → Copy User ID. Example: 123456789012345678,987654321098765432.">?</span></label>
-            <input type="text" v-model="settings.DISCORD_ALLOWED_USERS" placeholder="123456789012345678,987..." />
-          </div>
-
-          <h3>WhatsApp</h3>
-          <div class="field">
-            <label>Twilio Account SID <span class="help-tip" data-tip="Twilio console → Account → API Credentials → Account SID. Use Sandbox for testing.">?</span></label>
-            <input type="text" v-model="settings.WHATSAPP_ACCOUNT_SID" placeholder="ACxxxxxxxx..." />
-          </div>
-          <div class="field">
-            <label>Twilio Auth Token <span class="help-tip" data-tip="Same page as Account SID; click 'Show' to reveal. Treat as a password.">?</span></label>
-            <input type="text" v-model="settings.WHATSAPP_AUTH_TOKEN" />
-          </div>
-          <div class="field">
-            <label>From Number <span class="help-tip" data-tip="Your Twilio WhatsApp number in E.164 format, e.g. +14155238886 (sandbox).">?</span></label>
-            <input type="text" v-model="settings.WHATSAPP_FROM_NUMBER" placeholder="+14155238886" />
-          </div>
-          <div class="field">
-            <label>Home Number <span class="help-tip" data-tip="Your personal WhatsApp number that should receive notifications, in E.164 format.">?</span></label>
-            <input type="text" v-model="settings.WHATSAPP_HOME_NUMBER" placeholder="+15551234567" />
+          <div class="settings-section-title">🔌 Link a messenger</div>
+          <p class="settings-hint">Connect a messenger and chat with the agent directly from it — no need to open this site.</p>
+          <div class="settings-tiles">
+            <button class="settings-tile messenger" @click="panel = 'telegram'">
+              <span class="tile-icon">✈️</span>
+              <span class="tile-body">
+                <span class="tile-title">Telegram</span>
+                <span class="tile-sub">{{ messengerStatus.telegram ? 'Connected' : 'Not linked' }}</span>
+              </span>
+              <span class="tile-badge" :class="messengerStatus.telegram ? 'on' : 'off'"></span>
+            </button>
+            <button class="settings-tile messenger" @click="panel = 'discord'">
+              <span class="tile-icon">🎮</span>
+              <span class="tile-body">
+                <span class="tile-title">Discord</span>
+                <span class="tile-sub">{{ messengerStatus.discord ? 'Connected' : 'Not linked' }}</span>
+              </span>
+              <span class="tile-badge" :class="messengerStatus.discord ? 'on' : 'off'"></span>
+            </button>
+            <button class="settings-tile messenger" @click="panel = 'whatsapp'">
+              <span class="tile-icon">💬</span>
+              <span class="tile-body">
+                <span class="tile-title">WhatsApp</span>
+                <span class="tile-sub">{{ messengerStatus.whatsapp ? 'Connected' : 'Not linked' }}</span>
+              </span>
+              <span class="tile-badge" :class="messengerStatus.whatsapp ? 'on' : 'off'"></span>
+            </button>
           </div>
 
-          <h3>Account</h3>
+          <div class="settings-section-title">🧠 Agent brain</div>
+          <div class="settings-tiles">
+            <button class="settings-tile" @click="openMemory('MEMORY')">
+              <span class="tile-icon">💾</span>
+              <span class="tile-body">
+                <span class="tile-title">Memory</span>
+                <span class="tile-sub">What the agent remembers about your environment</span>
+              </span>
+            </button>
+            <button class="settings-tile" @click="openMemory('USER')">
+              <span class="tile-icon">👤</span>
+              <span class="tile-body">
+                <span class="tile-title">About you</span>
+                <span class="tile-sub">What the agent knows about you</span>
+              </span>
+            </button>
+            <button class="settings-tile" @click="openSkills">
+              <span class="tile-icon">📚</span>
+              <span class="tile-body">
+                <span class="tile-title">Skills</span>
+                <span class="tile-sub">Installed skill packs</span>
+              </span>
+            </button>
+            <button class="settings-tile" @click="openTools">
+              <span class="tile-icon">🛠️</span>
+              <span class="tile-body">
+                <span class="tile-title">Tools</span>
+                <span class="tile-sub">Built-in toolsets (web, browser, terminal…)</span>
+              </span>
+            </button>
+            <button class="settings-tile" @click="openMcp">
+              <span class="tile-icon">🔗</span>
+              <span class="tile-body">
+                <span class="tile-title">MCP servers</span>
+                <span class="tile-sub">External Model Context Protocol sources</span>
+              </span>
+            </button>
+          </div>
+
+          <div class="settings-section-title">👤 Account</div>
           <div class="field">
             <label>API Key</label>
             <div class="api-key-row">
-              <input type="text" :value="maskedKey(apiKey)" readonly />
+              <input type="text" :value="apiKeyVisible ? apiKey : maskedKey(apiKey)" readonly />
               <button @click="apiKeyVisible = !apiKeyVisible">{{ apiKeyVisible ? '🙈' : '👁' }}</button>
             </div>
           </div>
 
           <div class="modal-actions">
-            <button @click="settingsOpen = false">Cancel</button>
-            <button class="primary" @click="saveSettings">Save</button>
+            <button @click="settingsOpen = false">Close</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Telegram sub-modal -->
+      <div v-if="settingsOpen && panel === 'telegram'" class="modal-backdrop" @click="panel = null">
+        <div class="modal" @click.stop>
+          <h2>✈️ Link Telegram</h2>
+          <ol class="settings-steps">
+            <li>Open <a href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a> in Telegram and send <code>/newbot</code>. Pick a name and username, then copy the HTTP API token it gives you.</li>
+            <li>Find your own user ID with <a href="https://t.me/userinfobot" target="_blank" rel="noopener">@userinfobot</a> — start a chat with it and it replies with your numeric ID.</li>
+            <li>Paste both below and save. Then open your new bot in Telegram and message it like a normal contact.</li>
+          </ol>
+          <div class="field">
+            <label>Bot Token</label>
+            <input type="text" v-model="settings.TELEGRAM_BOT_TOKEN" placeholder="123456:ABC-DEF..." />
+          </div>
+          <div class="field">
+            <label>Allowed User IDs <span class="help-tip" data-tip="Comma-separated Telegram numeric IDs (from @userinfobot). Leave empty to let anyone talk to the bot — not recommended.">?</span></label>
+            <input type="text" v-model="settings.TELEGRAM_ALLOWED_USERS" placeholder="123456789,987654321" />
+          </div>
+          <div class="modal-actions">
+            <button @click="panel = null">Cancel</button>
+            <button class="primary" @click="saveSection('Telegram')">Save and link</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Discord sub-modal -->
+      <div v-if="settingsOpen && panel === 'discord'" class="modal-backdrop" @click="panel = null">
+        <div class="modal" @click.stop>
+          <h2>🎮 Link Discord</h2>
+          <ol class="settings-steps">
+            <li>Go to <a href="https://discord.com/developers/applications" target="_blank" rel="noopener">discord.com/developers/applications</a> → <strong>New Application</strong> → <strong>Bot</strong> → <strong>Reset Token</strong>. Copy the token.</li>
+            <li>On the same Bot page, enable the <strong>Message Content Intent</strong> toggle (required for DMs and mentions).</li>
+            <li>Get your Discord user ID: Settings → Advanced → enable <strong>Developer Mode</strong>, then right-click your name anywhere → <strong>Copy User ID</strong>.</li>
+            <li>Invite the bot to a server via OAuth2 → URL Generator → scopes <code>bot</code>, then open the generated URL.</li>
+            <li>Paste token and IDs below.</li>
+          </ol>
+          <div class="field">
+            <label>Bot Token</label>
+            <input type="text" v-model="settings.DISCORD_BOT_TOKEN" placeholder="MTk0..." />
+          </div>
+          <div class="field">
+            <label>Allowed User IDs <span class="help-tip" data-tip="Comma-separated Discord numeric IDs (Developer Mode → right-click → Copy User ID). Empty = allow anyone.">?</span></label>
+            <input type="text" v-model="settings.DISCORD_ALLOWED_USERS" placeholder="123456789012345678,987654321098765432" />
+          </div>
+          <div class="modal-actions">
+            <button @click="panel = null">Cancel</button>
+            <button class="primary" @click="saveSection('Discord')">Save and link</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- WhatsApp sub-modal -->
+      <div v-if="settingsOpen && panel === 'whatsapp'" class="modal-backdrop" @click="panel = null">
+        <div class="modal" @click.stop>
+          <h2>💬 Link WhatsApp</h2>
+          <ol class="settings-steps">
+            <li>Sign up at <a href="https://www.twilio.com/try-twilio" target="_blank" rel="noopener">twilio.com</a>, then open the console.</li>
+            <li>Console → <strong>Messaging → Try it out → Send a WhatsApp message</strong>. Activate the WhatsApp sandbox and follow the instructions (you'll send a code from your phone).</li>
+            <li>From the console copy your <strong>Account SID</strong>, <strong>Auth Token</strong>, and the sandbox <strong>From number</strong> (looks like <code>+141****8886</code>).</li>
+            <li><strong>Home number</strong> = your own WhatsApp number in E.164 format (with country code, e.g. <code>+155****4567</code>).</li>
+          </ol>
+          <div class="field">
+            <label>Twilio Account SID</label>
+            <input type="text" v-model="settings.WHATSAPP_ACCOUNT_SID" placeholder="ACxxxxxxxx..." />
+          </div>
+          <div class="field">
+            <label>Twilio Auth Token</label>
+            <input type="text" v-model="settings.WHATSAPP_AUTH_TOKEN" />
+          </div>
+          <div class="field">
+            <label>From Number (Twilio sandbox number)</label>
+            <input type="text" v-model="settings.WHATSAPP_FROM_NUMBER" placeholder="+141****8886" />
+          </div>
+          <div class="field">
+            <label>Home Number (your personal WhatsApp)</label>
+            <input type="text" v-model="settings.WHATSAPP_HOME_NUMBER" placeholder="+155****4567" />
+          </div>
+          <div class="modal-actions">
+            <button @click="panel = null">Cancel</button>
+            <button class="primary" @click="saveSection('WhatsApp')">Save and link</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Memory editor sub-modal -->
+      <div v-if="settingsOpen && panel === 'memory' && memEditor" class="modal-backdrop" @click="memEditor = null; panel = null">
+        <div class="modal modal-wide" @click.stop>
+          <h2>{{ memEditor.target === 'USER' ? '👤 About you' : '💾 Agent memory' }}</h2>
+          <p class="settings-hint">
+            {{ memEditor.target === 'USER'
+              ? 'Facts the agent should know about you: preferences, communication style, habits, timezone.'
+              : "The agent's notes about your environment: project facts, tool quirks, conventions." }}
+            This is a plain markdown file — write freely, one thought per line or as a paragraph.
+          </p>
+          <textarea v-model="memEditor.content" class="memory-editor" placeholder="e.g. User prefers concise responses. Timezone: Europe/Moscow. Project uses pytest with xdist."></textarea>
+          <div class="modal-actions">
+            <button @click="memEditor = null; panel = null">Cancel</button>
+            <button class="primary" @click="saveMemory">Save</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Skills sub-modal -->
+      <div v-if="settingsOpen && panel === 'skills'" class="modal-backdrop" @click="panel = null">
+        <div class="modal modal-wide" @click.stop>
+          <h2>📚 Skills</h2>
+          <p class="settings-hint">Skills are instructions the agent loads when relevant (a "how to do X" playbook). <button class="link-btn" @click="startSkillImport">+ Add skill</button></p>
+          <div v-if="skillsLoading" class="settings-hint">Loading…</div>
+          <div v-else class="skills-list">
+            <div v-for="s in skillsList" :key="(s.category || '') + '/' + s.name" class="skill-row">
+              <div class="skill-meta" @click="viewSkill(s.name)">
+                <div class="skill-name">{{ s.name }} <span v-if="s.category" class="skill-cat">{{ s.category }}</span><span v-if="s.bundled" class="skill-cat" title="Ships with the agent — can't be removed">bundled</span></div>
+                <div class="skill-desc">{{ s.description || '—' }}</div>
+              </div>
+              <button v-if="!s.bundled" class="icon-btn danger" @click.stop="deleteSkill(s.name)" title="Remove">🗑</button>
+            </div>
+            <div v-if="!skillsList.length" class="settings-hint">No skills installed.</div>
+          </div>
+          <div class="modal-actions">
+            <button @click="panel = null">Close</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Skill viewer/editor. Non-bundled skills are editable in place;
+           bundled ones stay read-only (next agent update would clobber edits). -->
+      <div v-if="skillPreview" class="modal-backdrop" @click="closeSkillPreview">
+        <div class="modal modal-wide" @click.stop>
+          <h2>{{ skillPreview.name }}<span v-if="!skillPreview.editable" class="skill-cat" style="margin-left:8px">read-only</span></h2>
+          <p v-if="!skillPreview.editable" class="settings-hint">This skill ships with the agent and can't be edited here — duplicate it under a new name to customize.</p>
+          <textarea v-model="skillPreview.content" class="memory-editor" :readonly="!skillPreview.editable"></textarea>
+          <div class="modal-actions">
+            <button @click="closeSkillPreview" :disabled="skillPreview.saving">{{ skillPreview.editable && skillPreview.content !== skillPreview.original ? 'Cancel' : 'Close' }}</button>
+            <button v-if="skillPreview.editable" class="primary" @click="saveSkillEdit" :disabled="skillPreview.saving || skillPreview.content === skillPreview.original || !skillPreview.content.trim()">{{ skillPreview.saving ? 'Saving…' : 'Save' }}</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Skill importer (paste OR github URL) -->
+      <div v-if="skillImporter" class="modal-backdrop" @click="!skillImporter.busy && (skillImporter = null)">
+        <div class="modal modal-wide" @click.stop>
+          <h2>+ Add skill</h2>
+          <div class="tab-bar">
+            <button :class="{ active: skillImporter.source === 'paste' }" @click="skillImporter.source = 'paste'">📋 Paste SKILL.md</button>
+            <button :class="{ active: skillImporter.source === 'github' }" @click="skillImporter.source = 'github'">🐙 From GitHub</button>
+          </div>
+          <div v-if="skillImporter.source === 'paste'">
+            <p class="settings-hint">Paste a complete <code>SKILL.md</code> (markdown with YAML frontmatter). It will be saved to <code>~/.hermes/skills/local/&lt;name&gt;/</code>.</p>
+            <div class="field">
+              <label>Name (lowercase, a-z 0-9 _ -)</label>
+              <input type="text" v-model="skillImporter.name" placeholder="my-skill" />
+            </div>
+            <textarea v-model="skillImporter.content" class="memory-editor" placeholder="--- name: my-skill --- ## When to use ..."></textarea>
+          </div>
+          <div v-else>
+            <p class="settings-hint">GitHub URL or <code>owner/repo</code> — runs <code>hermes skills install &lt;url&gt;</code>.</p>
+            <div class="field">
+              <label>GitHub URL or owner/repo</label>
+              <input type="text" v-model="skillImporter.url" placeholder="https://github.com/owner/repo" />
+            </div>
+          </div>
+          <div class="modal-actions">
+            <button @click="skillImporter = null" :disabled="skillImporter.busy">Cancel</button>
+            <button class="primary" @click="submitSkillImport" :disabled="skillImporter.busy">{{ skillImporter.busy ? 'Installing…' : 'Install' }}</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tools sub-modal -->
+      <div v-if="settingsOpen && panel === 'tools'" class="modal-backdrop" @click="panel = null">
+        <div class="modal modal-wide" @click.stop>
+          <h2>🛠️ Tools</h2>
+          <p class="settings-hint">Toggle built-in toolsets. The agent restarts briefly after each change so the new set takes effect.</p>
+          <div v-if="toolsLoading" class="settings-hint">Loading…</div>
+          <div v-else class="tools-list">
+            <label v-for="t in toolsList" :key="t.name" class="tool-row">
+              <input type="checkbox" :checked="t.enabled" @change="toggleTool(t)" />
+              <span class="tool-label">{{ t.label }}</span>
+              <span class="tool-name">{{ t.name }}</span>
+            </label>
+          </div>
+          <div class="modal-actions">
+            <button @click="panel = null">Close</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- MCP sub-modal -->
+      <div v-if="settingsOpen && panel === 'mcp'" class="modal-backdrop" @click="panel = null">
+        <div class="modal modal-wide" @click.stop>
+          <h2>🔗 MCP servers</h2>
+          <p class="settings-hint">
+            MCP (Model Context Protocol) servers expose extra tools to the agent. Try the free
+            <button class="link-btn" @click="startMcpAdd('deepwiki', 'https://mcp.deepwiki.com/mcp')">DeepWiki</button>
+            preset, or <button class="link-btn" @click="startMcpAdd()">+ add your own</button>.
+          </p>
+          <div v-if="mcpEmpty" class="settings-hint">No MCP servers configured.</div>
+          <div v-else class="skills-list">
+            <div v-for="srv in mcpList" :key="srv.name || srv" class="skill-row">
+              <div class="skill-meta"><div class="skill-name">{{ srv.name || srv }}<span v-if="srv.url" class="skill-cat">{{ srv.url }}</span></div></div>
+              <button v-if="srv.name" class="icon-btn danger" @click="removeMcp(srv.name)" title="Remove">🗑</button>
+            </div>
+          </div>
+          <div class="modal-actions">
+            <button @click="panel = null">Close</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- MCP add form -->
+      <div v-if="mcpForm" class="modal-backdrop" @click="!mcpForm.busy && (mcpForm = null)">
+        <div class="modal" @click.stop>
+          <h2>+ Add MCP server</h2>
+          <p class="settings-hint">Free public MCP servers you can try: <code>https://mcp.deepwiki.com/mcp</code> (GitHub docs Q&amp;A), <code>https://gitmcp.io/&lt;owner&gt;/&lt;repo&gt;</code> (any GitHub repo).</p>
+          <div class="field">
+            <label>Name (short identifier)</label>
+            <input type="text" v-model="mcpForm.name" placeholder="deepwiki" />
+          </div>
+          <div class="field">
+            <label>URL (HTTP / SSE endpoint)</label>
+            <input type="text" v-model="mcpForm.url" placeholder="https://mcp.deepwiki.com/mcp" />
+          </div>
+          <div class="modal-actions">
+            <button @click="mcpForm = null" :disabled="mcpForm.busy">Cancel</button>
+            <button class="primary" @click="submitMcpAdd" :disabled="mcpForm.busy">{{ mcpForm.busy ? 'Adding…' : 'Add' }}</button>
           </div>
         </div>
       </div>

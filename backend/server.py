@@ -27,7 +27,10 @@ DATA_DIR = ROOT / "data"
 UPLOADS_DIR = DATA_DIR / "uploads"
 DB_PATH = DATA_DIR / "app.db"
 MODELS_CACHE = DATA_DIR / "models.json"
-HERMES_ENV = Path(os.path.expanduser("~/.hermes/.env"))
+HERMES_HOME = Path(os.path.expanduser("~/.hermes"))
+HERMES_ENV = HERMES_HOME / ".env"
+HERMES_MEM_DIR = HERMES_HOME / "memories"
+HERMES_SKILLS_DIR = HERMES_HOME / "skills"
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
@@ -659,6 +662,56 @@ async def api_get_settings(request: web.Request) -> web.Response:
     return web.json_response(out)
 
 
+# ---------------------------------------------------------------------------
+# Model selection: write to hermes config + restart gateway so api_server
+# rebuilds its AIAgent with the new model. The api_server platform reads
+# model.default from ~/.hermes/config.yaml on startup — no in-process reload.
+# ---------------------------------------------------------------------------
+
+async def _run(*cmd: str, timeout: int = 20, max_output: int = 4000) -> tuple[bool, str]:
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
+        )
+        try:
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.TimeoutError:
+            proc.kill()
+            return False, "timeout"
+        msg = (out or b"").decode("utf-8", "replace").strip()[:max_output]
+        return proc.returncode == 0, msg
+    except Exception as e:
+        return False, str(e)[:200]
+
+
+async def api_get_model(request: web.Request) -> web.Response:
+    # Reads current model from hermes config (source of truth). No CLI 'get'
+    # exists, so parse the YAML directly.
+    try:
+        import yaml
+        cfg = yaml.safe_load(Path("/root/.hermes/config.yaml").read_text()) or {}
+        return web.json_response({"model": (cfg.get("model") or {}).get("default") or ""})
+    except Exception as e:
+        return web.json_response({"model": "", "error": str(e)[:200]})
+
+
+async def api_set_model(request: web.Request) -> web.Response:
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid_json"}, status=400)
+    model = (body.get("model") or "").strip()
+    if not model or len(model) > 200:
+        return web.json_response({"error": "bad_model"}, status=400)
+    ok, msg = await _run("hermes", "config", "set", "model.default", model)
+    if not ok:
+        return web.json_response({"error": "config_set_failed", "detail": msg}, status=500)
+    ok2, msg2 = await _run("systemctl", "restart", "hermes-gateway", timeout=90)
+    if not ok2:
+        return web.json_response({"error": "restart_failed", "detail": msg2}, status=500)
+    return web.json_response({"ok": True, "model": model})
+
+
 _GATEWAY_KEY_MAP = {
     "TELEGRAM_BOT_TOKEN": "hermes-gateway",
     "TELEGRAM_ALLOWED_USERS": "hermes-gateway",
@@ -761,6 +814,433 @@ async def api_post_settings(request: web.Request) -> web.Response:
 
 
 # ---------------------------------------------------------------------------
+# Memory / Skills / Tools / MCP
+#
+# Memory: plain markdown files at ~/.hermes/memories/{MEMORY,USER}.md. Reading
+# and writing them directly IS editing the agent's memory — the memory_tool
+# reloads from disk on every turn.
+#
+# Skills: a directory tree under ~/.hermes/skills/ — each skill is a folder
+# with SKILL.md (+ optional references/templates/scripts/). We list installed
+# skills and shell out to `hermes skills install/uninstall` for hub installs.
+# Local installs (paste SKILL.md) write directly into ~/.hermes/skills/local/.
+#
+# Tools: built-in toolsets are listed/enabled/disabled via `hermes tools`.
+# We shell out and parse the human-readable output (no JSON mode exists yet).
+#
+# MCP: `hermes mcp list / add / remove`. Same human-output parsing.
+# ---------------------------------------------------------------------------
+
+_MEM_TARGETS = {"MEMORY", "USER"}
+
+
+def _mem_path(target: str) -> Path:
+    return HERMES_MEM_DIR / f"{target}.md"
+
+
+async def api_get_memory(request: web.Request) -> web.Response:
+    target = (request.match_info.get("target") or "").upper()
+    if target not in _MEM_TARGETS:
+        return web.json_response({"error": "bad_target"}, status=400)
+    p = _mem_path(target)
+    content = p.read_text(encoding="utf-8") if p.exists() else ""
+    return web.json_response({"target": target, "content": content})
+
+
+async def api_put_memory(request: web.Request) -> web.Response:
+    target = (request.match_info.get("target") or "").upper()
+    if target not in _MEM_TARGETS:
+        return web.json_response({"error": "bad_target"}, status=400)
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid_json"}, status=400)
+    content = body.get("content")
+    if not isinstance(content, str):
+        return web.json_response({"error": "bad_content"}, status=400)
+    if len(content) > 500_000:
+        return web.json_response({"error": "too_large"}, status=413)
+    HERMES_MEM_DIR.mkdir(parents=True, exist_ok=True)
+    _mem_path(target).write_text(content, encoding="utf-8")
+    return web.json_response({"ok": True})
+
+
+# ---- Skills --------------------------------------------------------------
+
+def _safe_skill_name(name: str) -> Optional[str]:
+    """Names must be [a-z0-9_-], 1..64 chars. Matches hermes' own validator."""
+    if not name or not isinstance(name, str):
+        return None
+    name = name.strip().lower()
+    if not re.fullmatch(r"[a-z0-9_-]{1,64}", name):
+        return None
+    return name
+
+
+def _find_skill_dir(name: str) -> Optional[Path]:
+    """Skills live one or two levels deep (skills/<name>/ OR skills/<cat>/<name>/)."""
+    safe = _safe_skill_name(name)
+    if not safe:
+        return None
+    direct = HERMES_SKILLS_DIR / safe / "SKILL.md"
+    if direct.exists():
+        return direct.parent
+    for cat in HERMES_SKILLS_DIR.iterdir():
+        if not cat.is_dir():
+            continue
+        p = cat / safe / "SKILL.md"
+        if p.exists():
+            return p.parent
+    return None
+
+
+def _parse_skill_frontmatter(path: Path) -> dict:
+    """Extract `name`, `description` from a SKILL.md frontmatter block. Cheap
+    and tolerant — no full YAML parser."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return {}
+    if not text.startswith("---"):
+        return {}
+    end = text.find("\n---", 3)
+    if end == -1:
+        return {}
+    fm = text[3:end]
+    out: dict[str, str] = {}
+    for line in fm.splitlines():
+        m = re.match(r"^([a-zA-Z_]+)\s*:\s*(.+)$", line)
+        if m:
+            v = m.group(2).strip().strip('"').strip("'")
+            out[m.group(1)] = v
+    return out
+
+
+def _list_skills() -> list[dict]:
+    out: list[dict] = []
+    if not HERMES_SKILLS_DIR.exists():
+        return out
+    # Bundled skills can't be uninstalled — load the manifest once and tag them
+    # so the UI can hide/disable the Delete button.
+    bundled_names: set[str] = set()
+    bundled = HERMES_SKILLS_DIR / ".bundled_manifest"
+    if bundled.exists():
+        try:
+            for ln in bundled.read_text("utf-8").splitlines():
+                ln = ln.strip()
+                if ln:
+                    bundled_names.add(ln.split(":", 1)[0].strip())
+        except Exception:
+            pass
+    for entry in sorted(HERMES_SKILLS_DIR.iterdir()):
+        if not entry.is_dir():
+            continue
+        # Direct skill (no category)?
+        if (entry / "SKILL.md").exists():
+            fm = _parse_skill_frontmatter(entry / "SKILL.md")
+            nm = fm.get("name") or entry.name
+            out.append({
+                "name": nm,
+                "category": "",
+                "description": fm.get("description", ""),
+                "bundled": nm in bundled_names,
+            })
+            continue
+        # Category directory — list nested skills
+        for sub in sorted(entry.iterdir()):
+            if sub.is_dir() and (sub / "SKILL.md").exists():
+                fm = _parse_skill_frontmatter(sub / "SKILL.md")
+                nm = fm.get("name") or sub.name
+                out.append({
+                    "name": nm,
+                    "category": entry.name,
+                    "description": fm.get("description", ""),
+                    "bundled": nm in bundled_names,
+                })
+    return out
+
+
+async def api_list_skills(request: web.Request) -> web.Response:
+    return web.json_response({"items": _list_skills()})
+
+
+async def api_get_skill(request: web.Request) -> web.Response:
+    name = request.match_info.get("name", "")
+    sdir = _find_skill_dir(name)
+    if not sdir:
+        return web.json_response({"error": "not_found"}, status=404)
+    content = (sdir / "SKILL.md").read_text(encoding="utf-8", errors="replace")
+    # Bundled skills live in a tree we shouldn't mutate (next agent update
+    # would overwrite them) — surface that so the UI can show a read-only mode.
+    bundled = False
+    try:
+        manifest = HERMES_SKILLS_DIR / ".bundled_manifest"
+        if manifest.exists():
+            names = {ln.split(":", 1)[0].strip() for ln in manifest.read_text("utf-8").splitlines() if ln.strip()}
+            bundled = name in names or sdir.name in names
+    except Exception:
+        pass
+    return web.json_response({"name": sdir.name, "content": content, "bundled": bundled, "editable": not bundled})
+
+
+async def api_update_skill(request: web.Request) -> web.Response:
+    """Overwrite SKILL.md for a non-bundled skill."""
+    name = request.match_info.get("name", "")
+    sdir = _find_skill_dir(name)
+    if not sdir:
+        return web.json_response({"error": "not_found"}, status=404)
+    # Block edits to bundled skills — they'd get clobbered on next agent update.
+    manifest = HERMES_SKILLS_DIR / ".bundled_manifest"
+    if manifest.exists():
+        try:
+            names = {ln.split(":", 1)[0].strip() for ln in manifest.read_text("utf-8").splitlines() if ln.strip()}
+            if name in names or sdir.name in names:
+                return web.json_response({"error": "bundled", "detail": "Bundled skills can't be edited — duplicate it under a new name."}, status=400)
+        except Exception:
+            pass
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid_json"}, status=400)
+    content = body.get("content")
+    if not isinstance(content, str) or not content.strip():
+        return web.json_response({"error": "empty"}, status=400)
+    (sdir / "SKILL.md").write_text(content, encoding="utf-8")
+    asyncio.create_task(_restart_gateway())  # fire-and-forget so the new text loads
+    return web.json_response({"ok": True})
+
+
+async def api_install_skill(request: web.Request) -> web.Response:
+    """Two modes:
+      - {source: 'paste', name, content}: write SKILL.md to skills/local/<name>/
+      - {source: 'github', url}: shell out to `hermes skills install <url>`
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid_json"}, status=400)
+    source = body.get("source")
+    if source == "paste":
+        name = _safe_skill_name(body.get("name") or "")
+        content = body.get("content") or ""
+        if not name:
+            return web.json_response({"error": "bad_name"}, status=400)
+        if not isinstance(content, str) or not content.strip():
+            return web.json_response({"error": "empty_content"}, status=400)
+        if len(content) > 500_000:
+            return web.json_response({"error": "too_large"}, status=413)
+        if _find_skill_dir(name):
+            return web.json_response({"error": "already_exists"}, status=409)
+        sdir = HERMES_SKILLS_DIR / "local" / name
+        sdir.mkdir(parents=True, exist_ok=True)
+        (sdir / "SKILL.md").write_text(content, encoding="utf-8")
+        await _restart_gateway()
+        return web.json_response({"ok": True, "name": name, "path": str(sdir)})
+    if source == "github":
+        url = (body.get("url") or "").strip()
+        # Cheap allow-list: github.com URLs OR plain owner/repo[/path] form.
+        if not re.match(r"^(https?://(www\.)?github\.com/|[\w.-]+/[\w.-]+)", url):
+            return web.json_response({"error": "bad_url"}, status=400)
+        ok, msg = await _run("hermes", "skills", "install", url, timeout=120)
+        if not ok:
+            return web.json_response({"error": "install_failed", "detail": msg}, status=500)
+        await _restart_gateway()
+        return web.json_response({"ok": True, "output": msg[-1000:]})
+    return web.json_response({"error": "bad_source"}, status=400)
+
+
+async def api_delete_skill(request: web.Request) -> web.Response:
+    name = request.match_info.get("name", "")
+    sdir = _find_skill_dir(name)
+    if not sdir:
+        return web.json_response({"error": "not_found"}, status=404)
+    # Bundled skills (shipped with Hermes) cannot be removed — they live
+    # in skills/<category>/<name> and are listed in skills/.bundled_manifest.
+    bundled = HERMES_SKILLS_DIR / ".bundled_manifest"
+    if bundled.exists():
+        try:
+            names = {ln.split(":", 1)[0].strip() for ln in bundled.read_text("utf-8").splitlines() if ln.strip()}
+            if name in names:
+                return web.json_response({"error": "bundled", "detail": "This skill ships with the agent and can't be removed."}, status=400)
+        except Exception:
+            pass
+    # Local skills (under skills/local/) — just rm the dir.
+    try:
+        rel = sdir.relative_to(HERMES_SKILLS_DIR)
+    except ValueError:
+        return web.json_response({"error": "outside_skills_dir"}, status=400)
+    if rel.parts and rel.parts[0] == "local":
+        import shutil
+        shutil.rmtree(sdir, ignore_errors=True)
+        asyncio.create_task(_restart_gateway())  # fire-and-forget — UX stays snappy
+        return web.json_response({"ok": True, "method": "rm"})
+    # Hub skills: `hermes skills uninstall` is interactive (Confirm [y/N]).
+    # Feed it y\n via stdin so the agent actually removes the skill.
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "hermes", "skills", "uninstall", sdir.name,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        out, _ = await asyncio.wait_for(proc.communicate(input=b"y\n"), timeout=60)
+    except asyncio.TimeoutError:
+        proc.kill()
+        return web.json_response({"error": "timeout"}, status=504)
+    msg = (out or b"").decode("utf-8", "replace")[-2000:]
+    # CLI returns 0 even on logical failures ("not a hub-installed skill") —
+    # surface that to the user instead of pretending success.
+    if proc.returncode != 0 or "Error:" in msg or "not a hub-installed" in msg:
+        return web.json_response({"error": "uninstall_failed", "detail": msg}, status=500)
+    asyncio.create_task(_restart_gateway())  # fire-and-forget
+    return web.json_response({"ok": True, "method": "hermes_uninstall", "output": msg[-500:]})
+
+
+# ---- Tools / MCP ---------------------------------------------------------
+
+_RE_TOOL_LINE = re.compile(
+    r"^\s*(?P<state>✓\s*enabled|✗\s*disabled)\s+(?P<name>\S+)\s+(?P<label>.+?)\s*$"
+)
+
+
+async def api_list_tools(request: web.Request) -> web.Response:
+    """Parse `hermes tools list` output. Each tool: {name, label, enabled}."""
+    ok, out = await _run("hermes", "tools", "list", timeout=20, max_output=20000)
+    if not ok:
+        return web.json_response({"error": "list_failed", "detail": out}, status=500)
+    items: list[dict] = []
+    for raw in out.splitlines():
+        m = _RE_TOOL_LINE.match(raw)
+        if not m:
+            continue
+        items.append({
+            "name": m.group("name"),
+            "label": m.group("label").strip(),
+            "enabled": "enabled" in m.group("state"),
+        })
+    return web.json_response({"items": items})
+
+
+async def _restart_gateway() -> tuple[bool, str]:
+    """Restart hermes-gateway to pick up tool / skill / MCP / config changes.
+    The api_server holds its config + skill registry in memory at startup,
+    so any change made via `hermes config set` / `hermes tools enable` etc.
+    only takes effect after the gateway process is restarted."""
+    return await _run("systemctl", "restart", "hermes-gateway", timeout=90)
+
+
+async def api_toggle_tool(request: web.Request) -> web.Response:
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid_json"}, status=400)
+    name = (body.get("name") or "").strip()
+    enable = bool(body.get("enable"))
+    # Tool names are lowercase letters/digits/underscore (e.g. web, image_gen, computer_use)
+    if not re.fullmatch(r"[a-zA-Z0-9_:.-]{1,64}", name):
+        return web.json_response({"error": "bad_name"}, status=400)
+    action = "enable" if enable else "disable"
+    ok, msg = await _run("hermes", "tools", action, name, timeout=20)
+    if not ok:
+        return web.json_response({"error": "toggle_failed", "detail": msg}, status=500)
+    # Gateway restart required — the running api_server caches enabled toolsets
+    # at startup; without restart the change persists in config but the agent
+    # keeps using the old set.
+    ok2, msg2 = await _restart_gateway()
+    return web.json_response({
+        "ok": True,
+        "output": msg[-500:],
+        "restarted": ok2,
+        "restart_error": None if ok2 else msg2[-200:],
+    })
+
+
+async def api_list_mcp(request: web.Request) -> web.Response:
+    """Read MCP servers straight from ~/.hermes/config.yaml — more reliable
+    than parsing the columnar `hermes mcp list` output. Returns a list of
+    {name, url, enabled} objects."""
+    items: list[dict] = []
+    try:
+        import yaml  # lazy import — yaml ships with hermes
+        cfg_path = HERMES_HOME / "config.yaml"
+        if cfg_path.exists():
+            with cfg_path.open("r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+            servers = cfg.get("mcp_servers") or {}
+            for name, spec in servers.items():
+                if not isinstance(spec, dict):
+                    continue
+                items.append({
+                    "name": name,
+                    "url": spec.get("url") or spec.get("command") or "",
+                    "enabled": spec.get("enabled", True),
+                })
+    except Exception as exc:
+        return web.json_response({"error": "list_failed", "detail": str(exc)}, status=500)
+    return web.json_response({"servers": items, "empty": not items})
+
+
+async def api_add_mcp(request: web.Request) -> web.Response:
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid_json"}, status=400)
+    name = (body.get("name") or "").strip()
+    url = (body.get("url") or "").strip()
+    if not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", name):
+        return web.json_response({"error": "bad_name"}, status=400)
+    if not re.match(r"^https?://", url):
+        return web.json_response({"error": "bad_url"}, status=400)
+    # `hermes mcp add` is interactive — it prompts for auth and tool-selection.
+    # We answer the prompts via stdin: "n\n" = no auth, "y\n" = enable all tools,
+    # plus a "y\n" fallback if connection fails (save config anyway).
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "hermes", "mcp", "add", name, "--url", url,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        try:
+            out, _ = await asyncio.wait_for(
+                proc.communicate(input=b"n\ny\ny\n"), timeout=90
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            return web.json_response({"error": "timeout"}, status=504)
+        msg = (out or b"").decode("utf-8", "replace")[-2000:]
+        if proc.returncode != 0:
+            return web.json_response({"error": "add_failed", "detail": msg}, status=500)
+        ok2, _ = await _restart_gateway()
+        return web.json_response({"ok": True, "output": msg[-500:], "restarted": ok2})
+    except Exception as e:
+        return web.json_response({"error": "exception", "detail": str(e)[:200]}, status=500)
+
+
+async def api_remove_mcp(request: web.Request) -> web.Response:
+    name = (request.match_info.get("name") or "").strip()
+    if not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", name):
+        return web.json_response({"error": "bad_name"}, status=400)
+    # `hermes mcp remove` asks "Remove server? [Y/n]" — feed it y\n via stdin.
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "hermes", "mcp", "remove", name,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        out, _ = await asyncio.wait_for(proc.communicate(input=b"y\n"), timeout=30)
+    except asyncio.TimeoutError:
+        proc.kill()
+        return web.json_response({"error": "timeout"}, status=504)
+    msg = (out or b"").decode("utf-8", "replace")[-2000:]
+    if proc.returncode != 0:
+        return web.json_response({"error": "remove_failed", "detail": msg}, status=500)
+    ok2, _ = await _restart_gateway()
+    return web.json_response({"ok": True, "output": msg[-500:], "restarted": ok2})
+
+
+# ---------------------------------------------------------------------------
 # Streaming chat
 # ---------------------------------------------------------------------------
 
@@ -806,6 +1286,150 @@ def _last_active_id(c: sqlite3.Connection, chat_id: str) -> Optional[int]:
     return chain[-1]["id"] if chain else None
 
 
+# Active background streaming tasks keyed by assistant message id. Lets a
+# reloaded tab "subscribe" to an in-progress generation by reading rows the
+# task is updating in the DB. The task itself doesn't care if the client
+# disconnects — it keeps reading upstream and writing to the DB until done.
+_ACTIVE_STREAMS: dict[int, asyncio.Queue] = {}
+
+
+async def _run_upstream_stream(
+    chat_id: str,
+    user_msg_id: int,
+    assistant_id: int,
+    payload: dict,
+    headers: dict,
+    fanout: asyncio.Queue,
+) -> None:
+    """Read the upstream SSE stream, accumulate content + tool events, and
+    persist to the DB throttled every PERSIST_EVERY seconds. Fans out raw
+    chunks to `fanout` for the (possibly already-disconnected) HTTP client.
+
+    Runs as a top-level asyncio task — survives client disconnects.
+    """
+    accumulated = ""
+    tool_events: list[dict] = []
+    tool_index: dict[str, int] = {}
+    PERSIST_EVERY = 0.5
+
+    def persist_partial() -> None:
+        try:
+            with db() as c:
+                c.execute(
+                    "UPDATE messages SET content=?, tool_events=? WHERE id=?",
+                    (accumulated, json.dumps(tool_events) if tool_events else None, assistant_id),
+                )
+        except Exception:
+            pass
+
+    last_persist = time.time()
+    timeout = aiohttp.ClientTimeout(total=None, sock_read=600)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as sess:
+            async with sess.post(HERMES_URL, json=payload, headers=headers) as upstream:
+                if upstream.status != 200:
+                    err_body = await upstream.text()
+                    log.warning("upstream %s: %s", upstream.status, err_body[:300])
+                    err_evt = json.dumps({"error": f"upstream_status_{upstream.status}", "detail": err_body[:500]})
+                    await fanout.put(f"event: error\ndata: {err_evt}\n\n".encode())
+                    await fanout.put(b"data: [DONE]\n\n")
+                    return
+
+                buffer = b""
+                async for chunk in upstream.content.iter_any():
+                    if not chunk:
+                        continue
+                    await fanout.put(chunk)
+
+                    buffer += chunk
+                    while b"\n\n" in buffer:
+                        block, buffer = buffer.split(b"\n\n", 1)
+                        try:
+                            txt = block.decode("utf-8", errors="replace")
+                        except Exception:
+                            continue
+                        evt_name = "message"
+                        data_payload = None
+                        for line in txt.splitlines():
+                            if line.startswith("event:"):
+                                evt_name = line[6:].strip()
+                            elif line.startswith("data:"):
+                                data_payload = line[5:].strip()
+                        if not data_payload or data_payload == "[DONE]":
+                            continue
+                        if evt_name == "hermes.tool.progress":
+                            try:
+                                obj = json.loads(data_payload)
+                            except Exception:
+                                continue
+                            tcid = obj.get("toolCallId")
+                            if not tcid:
+                                continue
+                            if tcid in tool_index:
+                                idx = tool_index[tcid]
+                                tool_events[idx].update({
+                                    k: obj.get(k) for k in ("status", "label", "emoji", "tool") if obj.get(k) is not None
+                                })
+                            else:
+                                tool_index[tcid] = len(tool_events)
+                                tool_events.append({
+                                    "toolCallId": tcid,
+                                    "tool": obj.get("tool") or "",
+                                    "emoji": obj.get("emoji") or "🔧",
+                                    "label": obj.get("label") or obj.get("tool") or "",
+                                    "status": obj.get("status") or "running",
+                                })
+                            continue
+                        try:
+                            obj = json.loads(data_payload)
+                        except Exception:
+                            continue
+                        try:
+                            choices = obj.get("choices") or []
+                            if choices:
+                                delta = choices[0].get("delta") or {}
+                                content = delta.get("content")
+                                if isinstance(content, str):
+                                    accumulated += content
+                        except Exception:
+                            pass
+                    now_t = time.time()
+                    if now_t - last_persist >= PERSIST_EVERY:
+                        persist_partial()
+                        last_persist = now_t
+    except Exception as e:
+        log.exception("upstream error: %s", e)
+        try:
+            err_evt = json.dumps({"error": "upstream_exception", "detail": str(e)[:500]})
+            await fanout.put(f"event: error\ndata: {err_evt}\n\n".encode())
+        except Exception:
+            pass
+    finally:
+        # Final persist (or drop empty placeholder). NOTE: we do NOT touch
+        # created_at — the placeholder row was inserted with the timestamp of
+        # the stream START, and that's exactly what the UI should show.
+        if accumulated.strip() or tool_events:
+            with db() as c:
+                c.execute(
+                    "UPDATE messages SET content=?, tool_events=? WHERE id=?",
+                    (
+                        accumulated,
+                        json.dumps(tool_events) if tool_events else None,
+                        assistant_id,
+                    ),
+                )
+                c.execute("UPDATE chats SET updated_at=? WHERE id=?", (time.time(), chat_id))
+        else:
+            with db() as c:
+                c.execute("DELETE FROM messages WHERE id=?", (assistant_id,))
+                c.execute("UPDATE messages SET active_child_id=NULL WHERE id=?", (user_msg_id,))
+        try:
+            await fanout.put(None)  # sentinel: stream finished
+        except Exception:
+            pass
+        _ACTIVE_STREAMS.pop(assistant_id, None)
+
+
 async def api_chat_stream(request: web.Request) -> web.StreamResponse:
     try:
         body = await request.json()
@@ -814,9 +1438,6 @@ async def api_chat_stream(request: web.Request) -> web.StreamResponse:
     chat_id = body.get("chat_id")
     msg = body.get("message") or {}
     model = body.get("model") or "hermes-agent"
-    # Optional: if set, skip inserting a new user message and instead run the
-    # assistant turn for the existing user message with this id (used by the
-    # branching/edit flow — /branch already created the user message).
     assistant_for_user_id = body.get("assistant_for_user_id")
     if not chat_id:
         return web.json_response({"error": "missing_chat_id"}, status=400)
@@ -825,14 +1446,12 @@ async def api_chat_stream(request: web.Request) -> web.StreamResponse:
     user_atts = msg.get("attachments") or []
     now = time.time()
 
-    # Save user message linked into the active chain + auto-title
     user_msg_id: Optional[int] = None
     with db() as c:
         chat = c.execute("SELECT * FROM chats WHERE id=?", (chat_id,)).fetchone()
         if not chat:
             return web.json_response({"error": "chat_not_found"}, status=404)
         if assistant_for_user_id:
-            # Verify the user msg exists & belongs to this chat
             row = c.execute(
                 "SELECT id FROM messages WHERE id=? AND chat_id=? AND role='user'",
                 (int(assistant_for_user_id), chat_id),
@@ -859,8 +1478,24 @@ async def api_chat_stream(request: web.Request) -> web.StreamResponse:
 
     messages = _build_messages(chat_id)
     payload = {"model": model, "messages": messages, "stream": True}
-
     headers = {"Authorization": f"Bearer {CONFIG['API_SERVER_KEY']}", "Content-Type": "application/json"}
+
+    # Pre-insert the assistant row so a reloaded tab can locate the in-progress
+    # generation by id and read partial content from the DB.
+    with db() as c:
+        cur = c.execute(
+            "INSERT INTO messages(chat_id,role,content,attachments,created_at,parent_id,tool_events) VALUES(?,?,?,?,?,?,?)",
+            (chat_id, "assistant", "", json.dumps([]), time.time(), user_msg_id, None),
+        )
+        assistant_id = cur.lastrowid
+        c.execute("UPDATE messages SET active_child_id=? WHERE id=?", (assistant_id, user_msg_id))
+
+    # Run the upstream pump as a detached task — survives client disconnects.
+    fanout: asyncio.Queue = asyncio.Queue()
+    _ACTIVE_STREAMS[assistant_id] = fanout
+    asyncio.create_task(_run_upstream_stream(
+        chat_id, user_msg_id, assistant_id, payload, headers, fanout,
+    ))
 
     response = web.StreamResponse(status=200, headers={
         "Content-Type": "text/event-stream",
@@ -869,121 +1504,17 @@ async def api_chat_stream(request: web.Request) -> web.StreamResponse:
         "Connection": "keep-alive",
     })
     await response.prepare(request)
-
-    accumulated = ""
-    # Capture tool progress events in-order so we can persist them on the assistant
-    # message — the frontend re-renders the collapsible "tools" section from this.
-    tool_events: list[dict] = []
-    tool_index: dict[str, int] = {}
-
-    timeout = aiohttp.ClientTimeout(total=None, sock_read=600)
+    # Forward queue → client until sentinel or client disconnects.
     try:
-        async with aiohttp.ClientSession(timeout=timeout) as sess:
-            async with sess.post(HERMES_URL, json=payload, headers=headers) as upstream:
-                if upstream.status != 200:
-                    err_body = await upstream.text()
-                    log.warning("upstream %s: %s", upstream.status, err_body[:300])
-                    err_evt = json.dumps({"error": f"upstream_status_{upstream.status}", "detail": err_body[:500]})
-                    await response.write(f"event: error\ndata: {err_evt}\n\n".encode())
-                    await response.write(b"data: [DONE]\n\n")
-                    await response.write_eof()
-                    return response
-
-                # Forward bytes verbatim, while sniffing content deltas to accumulate
-                buffer = b""
-                async for chunk in upstream.content.iter_any():
-                    if not chunk:
-                        continue
-                    await response.write(chunk)
-                    try:
-                        await response.drain()
-                    except Exception:
-                        pass
-
-                    buffer += chunk
-                    # Process complete SSE messages (terminated by \n\n) for accumulation
-                    while b"\n\n" in buffer:
-                        block, buffer = buffer.split(b"\n\n", 1)
-                        try:
-                            txt = block.decode("utf-8", errors="replace")
-                        except Exception:
-                            continue
-                        evt_name = "message"
-                        data_payload = None
-                        for line in txt.splitlines():
-                            if line.startswith("event:"):
-                                evt_name = line[6:].strip()
-                            elif line.startswith("data:"):
-                                data_payload = line[5:].strip()
-                        if not data_payload or data_payload == "[DONE]":
-                            continue
-                        if evt_name == "hermes.tool.progress":
-                            try:
-                                obj = json.loads(data_payload)
-                            except Exception:
-                                continue
-                            tcid = obj.get("toolCallId")
-                            if not tcid:
-                                continue
-                            if tcid in tool_index:
-                                # Update existing entry (running → completed transition)
-                                idx = tool_index[tcid]
-                                tool_events[idx].update({
-                                    k: obj.get(k) for k in ("status", "label", "emoji", "tool") if obj.get(k) is not None
-                                })
-                            else:
-                                tool_index[tcid] = len(tool_events)
-                                tool_events.append({
-                                    "toolCallId": tcid,
-                                    "tool": obj.get("tool") or "",
-                                    "emoji": obj.get("emoji") or "🔧",
-                                    "label": obj.get("label") or obj.get("tool") or "",
-                                    "status": obj.get("status") or "running",
-                                })
-                            continue
-                        # default: chat.completion.chunk → accumulate content
-                        try:
-                            obj = json.loads(data_payload)
-                        except Exception:
-                            continue
-                        try:
-                            choices = obj.get("choices") or []
-                            if choices:
-                                delta = choices[0].get("delta") or {}
-                                content = delta.get("content")
-                                if isinstance(content, str):
-                                    accumulated += content
-                        except Exception:
-                            pass
-    except (asyncio.CancelledError, ConnectionResetError, ConnectionAbortedError):
-        log.info("client disconnected mid-stream for chat %s", chat_id)
+        while True:
+            item = await fanout.get()
+            if item is None:
+                break
+            await response.write(item)
+    except (ConnectionResetError, ConnectionAbortedError, asyncio.CancelledError):
+        log.info("client disconnected mid-stream for chat %s (task continues)", chat_id)
     except Exception as e:
-        log.exception("upstream error: %s", e)
-        try:
-            err_evt = json.dumps({"error": "upstream_exception", "detail": str(e)[:500]})
-            await response.write(f"event: error\ndata: {err_evt}\n\n".encode())
-        except Exception:
-            pass
-
-    # Persist assistant message linked to the user message we just inserted
-    if accumulated.strip() or tool_events:
-        with db() as c:
-            cur = c.execute(
-                "INSERT INTO messages(chat_id,role,content,attachments,created_at,parent_id,tool_events) VALUES(?,?,?,?,?,?,?)",
-                (
-                    chat_id,
-                    "assistant",
-                    accumulated,
-                    json.dumps([]),
-                    time.time(),
-                    user_msg_id,
-                    json.dumps(tool_events) if tool_events else None,
-                ),
-            )
-            assistant_id = cur.lastrowid
-            c.execute("UPDATE messages SET active_child_id=? WHERE id=?", (assistant_id, user_msg_id))
-            c.execute("UPDATE chats SET updated_at=? WHERE id=?", (time.time(), chat_id))
-
+        log.exception("client write error: %s", e)
     try:
         await response.write_eof()
     except Exception:
@@ -1069,6 +1600,8 @@ def create_app() -> web.Application:
 
     # Models
     app.router.add_get("/api/models", require_auth(api_models))
+    app.router.add_get("/api/model", require_auth(api_get_model))
+    app.router.add_post("/api/model", require_auth(api_set_model))
 
     # Chats
     app.router.add_get("/api/chats", require_auth(api_list_chats))
@@ -1095,6 +1628,26 @@ def create_app() -> web.Application:
     # Settings
     app.router.add_get("/api/settings", require_auth(api_get_settings))
     app.router.add_post("/api/settings", require_auth(api_post_settings))
+
+    # Memory (agent's saved facts about user & environment)
+    app.router.add_get("/api/memory/{target}", require_auth(api_get_memory))
+    app.router.add_put("/api/memory/{target}", require_auth(api_put_memory))
+
+    # Skills
+    app.router.add_get("/api/skills", require_auth(api_list_skills))
+    app.router.add_get("/api/skills/{name}", require_auth(api_get_skill))
+    app.router.add_put("/api/skills/{name}", require_auth(api_update_skill))
+    app.router.add_post("/api/skills", require_auth(api_install_skill))
+    app.router.add_delete("/api/skills/{name}", require_auth(api_delete_skill))
+
+    # Tools (built-in toolsets, enable/disable)
+    app.router.add_get("/api/tools", require_auth(api_list_tools))
+    app.router.add_post("/api/tools/toggle", require_auth(api_toggle_tool))
+
+    # MCP servers
+    app.router.add_get("/api/mcp", require_auth(api_list_mcp))
+    app.router.add_post("/api/mcp", require_auth(api_add_mcp))
+    app.router.add_delete("/api/mcp/{name}", require_auth(api_remove_mcp))
 
     # Static
     app.router.add_get("/{filename:.+\\.(?:js|css|html|svg|png|jpg|jpeg|webp|ico|map|json)}", serve_static)
