@@ -1506,7 +1506,7 @@ const App = {
           <p class="settings-hint">Connect a messenger and chat with the agent directly from it — no need to open this site.</p>
           <div class="settings-tiles">
             <button class="settings-tile messenger" @click="panel = 'telegram'">
-              <span class="tile-icon">✈️</span>
+              <img class="tile-icon" src="assets/telegram.svg" alt="">
               <span class="tile-body">
                 <span class="tile-title">Telegram</span>
                 <span class="tile-sub">{{ messengerStatus.telegram ? 'Connected' : 'Not linked' }}</span>
@@ -1514,7 +1514,7 @@ const App = {
               <span class="tile-badge" :class="messengerStatus.telegram ? 'on' : 'off'"></span>
             </button>
             <button class="settings-tile messenger" @click="panel = 'discord'">
-              <span class="tile-icon">🎮</span>
+              <img class="tile-icon" src="assets/discord.svg" alt="">
               <span class="tile-body">
                 <span class="tile-title">Discord</span>
                 <span class="tile-sub">{{ messengerStatus.discord ? 'Connected' : 'Not linked' }}</span>
@@ -1522,7 +1522,7 @@ const App = {
               <span class="tile-badge" :class="messengerStatus.discord ? 'on' : 'off'"></span>
             </button>
             <button class="settings-tile messenger" @click="panel = 'whatsapp'">
-              <span class="tile-icon">💬</span>
+              <img class="tile-icon" src="assets/whatsapp.svg" alt="">
               <span class="tile-body">
                 <span class="tile-title">WhatsApp</span>
                 <span class="tile-sub">{{ messengerStatus.whatsapp ? 'Connected' : 'Not linked' }}</span>

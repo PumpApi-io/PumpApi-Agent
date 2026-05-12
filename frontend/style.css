@@ -654,6 +654,7 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
   border-color: var(--accent);
 }
 .settings-tile .tile-icon { font-size: 22px; line-height: 1; flex: 0 0 auto; }
+.settings-tile img.tile-icon { width: 22px; height: 22px; object-fit: contain; }
 .settings-tile .tile-body { flex: 1 1 auto; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .settings-tile .tile-title { font-size: 14px; font-weight: 600; }
 .settings-tile .tile-sub { font-size: 12px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
