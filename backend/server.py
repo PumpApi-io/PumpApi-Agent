@@ -1041,7 +1041,11 @@ async def api_install_skill(request: web.Request) -> web.Response:
         # Cheap allow-list: github.com URLs OR plain owner/repo[/path] form.
         if not re.match(r"^(https?://(www\.)?github\.com/|[\w.-]+/[\w.-]+)", url):
             return web.json_response({"error": "bad_url"}, status=400)
-        ok, msg = await _run("hermes", "skills", "install", url, timeout=120)
+        # Normalize: strip "https://github.com/" prefix and any "tree/<branch>/"
+        # segment so `owner/repo/tree/main/skills/foo` becomes `owner/repo/skills/foo`.
+        spec = re.sub(r"^https?://(www\.)?github\.com/", "", url).strip("/")
+        spec = re.sub(r"/tree/[^/]+/", "/", spec)
+        ok, msg = await _run("hermes", "skills", "install", spec, "--force", timeout=120)
         if not ok:
             return web.json_response({"error": "install_failed", "detail": msg}, status=500)
         await _restart_gateway()

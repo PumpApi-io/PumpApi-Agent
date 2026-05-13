@@ -264,6 +264,7 @@ const App = {
       }
       document.addEventListener('keydown', onGlobalKey);
       document.addEventListener('click', onGlobalClick);
+      document.addEventListener('selectionchange', onSelectionChange);
     });
 
     function onGlobalKey(e) {
@@ -482,7 +483,7 @@ const App = {
         const ms = await api(`/api/chats/${id}/messages`);
         messages.value = ms;
         await nextTick();
-        scrollToBottom();
+        scrollToBottom(true);
         // If the tail is an assistant message that may still be streaming on
         // the backend (recent + reasonable length is allowed to grow), poll
         // until it stops changing.
@@ -504,9 +505,15 @@ const App = {
       // chat won't appear in list until first user message lands (backend filters)
     }
 
-    function scrollToBottom() {
+    function scrollToBottom(force = false) {
       const el = chatAreaRef.value;
-      if (el) el.scrollTop = el.scrollHeight;
+      if (!el) return;
+      // Only auto-scroll if user is already near the bottom (within 100px),
+      // unless the caller forces it (e.g. just sent a message).
+      const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      if (force || distFromBottom < 100) {
+        el.scrollTop = el.scrollHeight;
+      }
     }
 
     // ---- Sidebar actions ----
@@ -655,6 +662,29 @@ const App = {
 
     function removeAttachment(idx) { draftAttachments.value.splice(idx, 1); }
 
+    // Attachment-card helpers (filename → format/preview/size formatting).
+    const TEXT_PREVIEW_EXT = new Set(['txt','md','json','yaml','yml','csv','log','py','js','ts','jsx','tsx','html','css','sh','xml','toml','ini','sql','rb','go','rs','c','cpp','h','hpp','java','php']);
+    function attFormat(filename) {
+      const dot = (filename || '').lastIndexOf('.');
+      const ext = dot >= 0 ? filename.slice(dot + 1).toLowerCase() : '';
+      return (ext || 'file').slice(0, 5);
+    }
+    function attIsTextPreviewable(filename) {
+      const dot = (filename || '').lastIndexOf('.');
+      const ext = dot >= 0 ? filename.slice(dot + 1).toLowerCase() : '';
+      return TEXT_PREVIEW_EXT.has(ext);
+    }
+    function truncFilename(filename) {
+      const s = filename || '';
+      return s.length > 50 ? s.slice(0, 49) + '…' : s;
+    }
+    function formatSize(bytes) {
+      const n = Number(bytes) || 0;
+      if (n < 1024) return n + 'B';
+      if (n < 1024 * 1024) return (n / 1024).toFixed(n < 10240 ? 1 : 0) + 'k';
+      return (n / 1024 / 1024).toFixed(1) + 'M';
+    }
+
     function openTextPreview(att, field, editable) {
       textPreview.value = {
         filename: att.filename,
@@ -710,7 +740,7 @@ const App = {
       draftAttachments.value = [];
       autoResize();
       await nextTick();
-      scrollToBottom();
+      scrollToBottom(true);
 
       await streamAssistantTurn({ message: { content: text, attachments } });
     }
@@ -935,7 +965,7 @@ const App = {
         messages.value = ms;
       } catch (e) {}
       await nextTick();
-      scrollToBottom();
+      scrollToBottom(true);
     }
 
     // ---- Tool block expand/collapse ----
@@ -975,6 +1005,45 @@ const App = {
         const url = t.getAttribute('data-fullsrc') || t.getAttribute('src');
         if (url) lightboxUrl.value = url;
       }
+    }
+
+    // ---- Reply-to-selection ----
+    // Floating "Reply" button shown above any text selection inside .chat-area.
+    // Click → push the selected text into draftAttachments as a quoted excerpt.
+    const replyBtn = ref({ visible: false, x: 0, y: 0, text: '' });
+    let replyCounter = 0;
+    function onSelectionChange() {
+      const sel = window.getSelection();
+      const text = sel ? sel.toString().trim() : '';
+      if (!text) { replyBtn.value.visible = false; return; }
+      // Only show if the selection is inside the chat-area
+      const area = chatAreaRef.value;
+      if (!area || !sel.rangeCount) { replyBtn.value.visible = false; return; }
+      const range = sel.getRangeAt(0);
+      if (!area.contains(range.commonAncestorContainer)) { replyBtn.value.visible = false; return; }
+      const rect = range.getBoundingClientRect();
+      if (!rect.width && !rect.height) { replyBtn.value.visible = false; return; }
+      replyBtn.value = {
+        visible: true,
+        x: rect.left + rect.width / 2,
+        y: rect.top - 8,
+        text,
+      };
+    }
+    function replyToSelection() {
+      const text = replyBtn.value.text;
+      if (!text) return;
+      replyCounter += 1;
+      draftAttachments.value.push({
+        kind: 'text',
+        filename: `excerpt_from_previous_agent_message-${replyCounter}.txt`,
+        text,
+        size: text.length,
+      });
+      // Clear native selection + hide button + focus the composer
+      window.getSelection()?.removeAllRanges();
+      replyBtn.value.visible = false;
+      nextTick(() => textareaRef.value?.focus());
     }
 
     // ---- Settings ----
@@ -1256,10 +1325,12 @@ const App = {
       newChat, openChat, pinChat, startRename, commitRename, cancelRename,
       deleteChatPrompt, send, abortStream, onKeydown, onPaste,
       pickFile, removeAttachment, autoResize, attachFile, onDrop,
+      attFormat, attIsTextPreviewable, truncFilename, formatSize,
       formatTimestamp,
       openTextPreview, saveTextPreview,
       startEdit, cancelEdit, saveEdit, removeEditAttachment,
       editingAttachments, onChatClick,
+      replyBtn, replyToSelection,
       sidebarOpen, toggleSidebar, closeSidebar,
       errorBanner, dismissError,
       openSettings, saveSection, maskedKey,
@@ -1380,9 +1451,14 @@ const App = {
               <div v-if="editingMessageId !== m.id && m.attachments && m.attachments.length" class="msg-attachments">
                 <template v-for="(a, i) in m.attachments" :key="i">
                   <img v-if="a.type === 'image' && a.data_uri" class="thumb-img" :src="a.data_uri" @click="lightboxUrl = a.data_uri" />
-                  <span v-else-if="a.type === 'text'" class="att-pill" @click="openTextPreview(a, 'preview', false)" style="cursor:pointer;">
-                    📄 {{ a.filename }} ({{ Math.round((a.size||0)/100)/10 }}k)
-                  </span>
+                  <div v-else-if="a.type === 'text'" class="att-card" @click="openTextPreview(a, 'preview', false)">
+                    <div v-if="attIsTextPreviewable(a.filename)" class="att-preview">{{ (a.preview || '').slice(0, 80) }}</div>
+                    <div v-else class="att-name">{{ truncFilename(a.filename) }}</div>
+                    <div class="att-meta">
+                      <span class="att-fmt">{{ attFormat(a.filename) }}</span>
+                      <span class="att-size">{{ formatSize(a.size) }}</span>
+                    </div>
+                  </div>
                 </template>
               </div>
               <div v-if="editingMessageId !== m.id" class="msg-actions">
@@ -1412,6 +1488,11 @@ const App = {
           </div>
         </div>
 
+        <!-- Floating "Reply" button shown above any text selection in the chat area -->
+        <button v-if="replyBtn.visible" class="reply-floating"
+                :style="{ left: replyBtn.x + 'px', top: replyBtn.y + 'px' }"
+                @mousedown.prevent @click="replyToSelection">↩ Reply</button>
+
         <!-- Input bar -->
         <div class="input-bar-wrap">
           <div v-if="errorBanner" class="error-banner" :class="'banner-' + (errorBanner.kind || 'error')">
@@ -1424,12 +1505,17 @@ const App = {
           <div class="input-bar-inner">
             <div v-if="draftAttachments.length" class="attachments-row">
               <template v-for="(a, i) in draftAttachments" :key="i">
-                <div v-if="a.kind === 'image'" class="att-pill-input image" @click="lightboxUrl = a.dataUri">
+                <div v-if="a.kind === 'image'" class="att-card image" @click="lightboxUrl = a.dataUri">
                   <img :src="a.dataUri" />
                   <button class="att-x" @click.stop="removeAttachment(i)">✕</button>
                 </div>
-                <div v-else class="att-pill-input" @click="openTextPreview(a, 'text', true)">
-                  <span class="att-name">📄 {{ a.filename }} ({{ Math.round((a.size||0)/100)/10 }}k)</span>
+                <div v-else class="att-card" @click="openTextPreview(a, 'text', true)">
+                  <div v-if="attIsTextPreviewable(a.filename)" class="att-preview">{{ (a.text || '').slice(0, 80) }}</div>
+                  <div v-else class="att-name">{{ truncFilename(a.filename) }}</div>
+                  <div class="att-meta">
+                    <span class="att-fmt">{{ attFormat(a.filename) }}</span>
+                    <span class="att-size">{{ formatSize(a.size) }}</span>
+                  </div>
                   <button class="att-x" @click.stop="removeAttachment(i)">✕</button>
                 </div>
               </template>
@@ -1739,10 +1825,10 @@ const App = {
             <textarea v-model="skillImporter.content" class="memory-editor" placeholder="--- name: my-skill --- ## When to use ..."></textarea>
           </div>
           <div v-else>
-            <p class="settings-hint">GitHub URL or <code>owner/repo</code> — runs <code>hermes skills install &lt;url&gt;</code>.</p>
+            <p class="settings-hint">Paste a GitHub URL pointing to a skill folder, e.g. <code>https://github.com/anthropics/skills/tree/main/skills/frontend-design</code>. You can also just ask the PumpApi Agent to install it for you.</p>
             <div class="field">
-              <label>GitHub URL or owner/repo</label>
-              <input type="text" v-model="skillImporter.url" placeholder="https://github.com/owner/repo" />
+              <label>GitHub URL</label>
+              <input type="text" v-model="skillImporter.url" placeholder="https://github.com/anthropics/skills/tree/main/skills/frontend-design" />
             </div>
           </div>
           <div class="modal-actions">
