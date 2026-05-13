@@ -1422,14 +1422,19 @@ const App = {
                 <textarea v-model="editingValue"></textarea>
                 <div v-if="editingAttachments.length" class="msg-attachments">
                   <template v-for="(a, i) in editingAttachments" :key="i">
-                    <span v-if="a.type === 'text'" class="att-pill">
-                      📄 {{ a.filename }}
-                      <button class="att-x" @click="removeEditAttachment(m, i)" style="background:transparent;border:none;color:#999;cursor:pointer;margin-left:6px;">✕</button>
-                    </span>
-                    <span v-else-if="a.type === 'image'" class="att-pill">
-                      🖼 {{ a.filename }}
-                      <button class="att-x" @click="removeEditAttachment(m, i)" style="background:transparent;border:none;color:#999;cursor:pointer;margin-left:6px;">✕</button>
-                    </span>
+                    <div v-if="a.type === 'image' && a.data_uri" class="att-card image" @click="lightboxUrl = a.data_uri">
+                      <img :src="a.data_uri" />
+                      <button class="att-x" @click.stop="removeEditAttachment(m, i)">✕</button>
+                    </div>
+                    <div v-else-if="a.type === 'text'" class="att-card" @click="openTextPreview(a, 'preview', true)">
+                      <div v-if="attIsTextPreviewable(a.filename)" class="att-preview">{{ (a.preview || '').slice(0, 80) }}</div>
+                      <div v-else class="att-name">{{ truncFilename(a.filename) }}</div>
+                      <div class="att-meta">
+                        <span class="att-fmt">{{ attFormat(a.filename) }}</span>
+                        <span class="att-size">{{ formatSize(a.size) }}</span>
+                      </div>
+                      <button class="att-x" @click.stop="removeEditAttachment(m, i)">✕</button>
+                    </div>
                   </template>
                 </div>
                 <div class="msg-edit-actions">
