@@ -711,6 +711,12 @@ const App = {
     }
 
     function abortStream() {
+      // Tell the backend to cancel the upstream generation. This closes
+      // the connection to Hermes, which interrupts the agent for real.
+      // Without this the asyncio task keeps streaming into the DB.
+      if (activeChatId.value) {
+        api(`/api/chat/${activeChatId.value}/stop`, { method: 'POST' }).catch(() => {});
+      }
       if (abortController) abortController.abort();
     }
 

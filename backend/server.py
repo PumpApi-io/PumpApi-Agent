@@ -1290,11 +1290,11 @@ def _last_active_id(c: sqlite3.Connection, chat_id: str) -> Optional[int]:
     return chain[-1]["id"] if chain else None
 
 
-# Active background streaming tasks keyed by assistant message id. Lets a
-# reloaded tab "subscribe" to an in-progress generation by reading rows the
-# task is updating in the DB. The task itself doesn't care if the client
-# disconnects — it keeps reading upstream and writing to the DB until done.
-_ACTIVE_STREAMS: dict[int, asyncio.Queue] = {}
+# Active background streaming tasks keyed by chat_id. We keep the task handle
+# so the stop endpoint can cancel it — cancelling closes the upstream aiohttp
+# connection, which Hermes's api_server sees as a client disconnect and
+# interrupts the agent for real.
+_ACTIVE_STREAMS: dict[str, asyncio.Task] = {}
 
 
 async def _run_upstream_stream(
@@ -1431,7 +1431,7 @@ async def _run_upstream_stream(
             await fanout.put(None)  # sentinel: stream finished
         except Exception:
             pass
-        _ACTIVE_STREAMS.pop(assistant_id, None)
+        _ACTIVE_STREAMS.pop(chat_id, None)
 
 
 async def api_chat_stream(request: web.Request) -> web.StreamResponse:
@@ -1495,11 +1495,12 @@ async def api_chat_stream(request: web.Request) -> web.StreamResponse:
         c.execute("UPDATE messages SET active_child_id=? WHERE id=?", (assistant_id, user_msg_id))
 
     # Run the upstream pump as a detached task — survives client disconnects.
+    # The task handle goes into _ACTIVE_STREAMS so the stop endpoint can cancel it.
     fanout: asyncio.Queue = asyncio.Queue()
-    _ACTIVE_STREAMS[assistant_id] = fanout
-    asyncio.create_task(_run_upstream_stream(
+    task = asyncio.create_task(_run_upstream_stream(
         chat_id, user_msg_id, assistant_id, payload, headers, fanout,
     ))
+    _ACTIVE_STREAMS[chat_id] = task
 
     response = web.StreamResponse(status=200, headers={
         "Content-Type": "text/event-stream",
@@ -1524,6 +1525,21 @@ async def api_chat_stream(request: web.Request) -> web.StreamResponse:
     except Exception:
         pass
     return response
+
+
+async def api_chat_stop(request: web.Request) -> web.Response:
+    """Cancel the in-progress generation for a chat.
+
+    Cancelling the task closes the upstream aiohttp connection to Hermes,
+    which Hermes's api_server sees as a client disconnect and uses to
+    interrupt the agent (stops further LLM calls). Partial content already
+    streamed is persisted by the task's `finally` block.
+    """
+    chat_id = request.match_info["chat_id"]
+    task = _ACTIVE_STREAMS.get(chat_id)
+    if task and not task.done():
+        task.cancel()
+    return web.json_response({"ok": True})
 
 
 # ---------------------------------------------------------------------------
@@ -1623,6 +1639,7 @@ def create_app() -> web.Application:
 
     # Stream
     app.router.add_post("/api/chat/stream", require_auth(api_chat_stream))
+    app.router.add_post("/api/chat/{chat_id}/stop", require_auth(api_chat_stop))
 
     # Uploads
     app.router.add_post("/api/upload", require_auth(api_upload))
