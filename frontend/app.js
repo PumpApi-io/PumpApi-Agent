@@ -248,6 +248,29 @@ const App = {
       tools: [], // [{toolCallId, name, emoji, label, status}]
     });
 
+    // ---- URL <-> active chat sync ----
+    // /c/<chat_id> deep-links the SPA to a specific chat. We push on every
+    // openChat, replace on newChat (before it has a first message), and
+    // listen to popstate so back/forward buttons just work.
+    function chatIdFromURL() {
+      const m = (typeof window !== 'undefined' ? window.location.pathname : '').match(/^\/c\/([0-9a-f]{32})/);
+      return m ? m[1] : null;
+    }
+    function setURLForChat(id, { replace = false } = {}) {
+      if (typeof window === 'undefined') return;
+      const target = id ? `/c/${id}` : '/';
+      if (window.location.pathname === target) return;
+      (replace ? window.history.replaceState : window.history.pushState).call(
+        window.history, null, '', target,
+      );
+    }
+    if (typeof window !== 'undefined') {
+      window.addEventListener('popstate', () => {
+        const id = chatIdFromURL();
+        if (id && id !== activeChatId.value) openChat(id);
+      });
+    }
+
     // ---- Lifecycle ----
     onMounted(async () => {
       await loadModels();
@@ -256,8 +279,11 @@ const App = {
       // scroll computes a sensible window on first render.
       await nextTick();
       measureChatsViewport();
-      // Auto-select most recent or create one
-      if (chats.value.length) {
+      // Prefer the chat in the URL; fall back to most-recent or a new one.
+      const urlId = chatIdFromURL();
+      if (urlId) {
+        await openChat(urlId);
+      } else if (chats.value.length) {
         await openChat(chats.value[0].id);
       } else {
         await newChat();
@@ -474,6 +500,7 @@ const App = {
     async function openChat(id) {
       stopPolling();
       activeChatId.value = id;
+      setURLForChat(id);
       sidebarOpen.value = false;
       messages.value = [];
       liveAssistant.visible = false;
@@ -488,7 +515,7 @@ const App = {
         // the backend (recent + reasonable length is allowed to grow), poll
         // until it stops changing.
         const last = ms[ms.length - 1];
-        if (last && last.role === 'assistant' && (Date.now() / 1000 - (last.created_at || 0) < 300)) {
+        if (last && (Date.now() / 1000 - (last.created_at || 0) < 300)) {
           startPollingFor(id);
         }
       } catch (e) { /* ignore */ }
@@ -497,6 +524,7 @@ const App = {
     async function newChat() {
       const r = await api('/api/chats', { method: 'POST', body: JSON.stringify({ model: selectedModel.value }) });
       activeChatId.value = r.id;
+      setURLForChat(r.id);
       sidebarOpen.value = false;
       messages.value = [];
       liveAssistant.visible = false;
@@ -1603,7 +1631,7 @@ const App = {
           <p class="settings-hint">Connect a messenger and chat with the agent directly from it — no need to open this site.</p>
           <div class="settings-tiles">
             <button class="settings-tile messenger" @click="panel = 'telegram'">
-              <img class="tile-icon" src="assets/telegram.svg" alt="">
+              <img class="tile-icon" src="/assets/telegram.svg" alt="">
               <span class="tile-body">
                 <span class="tile-title">Telegram</span>
                 <span class="tile-sub">{{ messengerStatus.telegram ? 'Connected' : 'Not linked' }}</span>
@@ -1611,7 +1639,7 @@ const App = {
               <span class="tile-badge" :class="messengerStatus.telegram ? 'on' : 'off'"></span>
             </button>
             <button class="settings-tile messenger" @click="panel = 'discord'">
-              <img class="tile-icon" src="assets/discord.svg" alt="">
+              <img class="tile-icon" src="/assets/discord.svg" alt="">
               <span class="tile-body">
                 <span class="tile-title">Discord</span>
                 <span class="tile-sub">{{ messengerStatus.discord ? 'Connected' : 'Not linked' }}</span>
@@ -1619,7 +1647,7 @@ const App = {
               <span class="tile-badge" :class="messengerStatus.discord ? 'on' : 'off'"></span>
             </button>
             <button class="settings-tile messenger" @click="panel = 'whatsapp'">
-              <img class="tile-icon" src="assets/whatsapp.svg" alt="">
+              <img class="tile-icon" src="/assets/whatsapp.svg" alt="">
               <span class="tile-body">
                 <span class="tile-title">WhatsApp</span>
                 <span class="tile-sub">{{ messengerStatus.whatsapp ? 'Connected' : 'Not linked' }}</span>
