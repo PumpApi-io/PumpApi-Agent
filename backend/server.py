@@ -1481,6 +1481,17 @@ async def api_chat_stream(request: web.Request) -> web.StreamResponse:
             c.execute("UPDATE chats SET updated_at=?, model=? WHERE id=?", (now, model, chat_id))
 
     messages = _build_messages(chat_id)
+    # Tell the agent which platform and chat it's responding in — so it can
+    # hard-code these into any bot/notify scripts it creates for the user.
+    context_sys = {
+        "role": "system",
+        "content": (
+            "Current Session Context:\n"
+            "platform: api_server\n"
+            f"chat_id: {chat_id}"
+        ),
+    }
+    messages = [context_sys] + messages
     payload = {"model": model, "messages": messages, "stream": True}
     headers = {"Authorization": f"Bearer {CONFIG['API_SERVER_KEY']}", "Content-Type": "application/json"}
 
@@ -1611,6 +1622,9 @@ def create_app() -> web.Application:
 
     # Pages
     app.router.add_get("/", root_handler)
+    # SPA deep-link: /c/<chat_id> shows the app with that chat preselected.
+    # We just serve index.html — the frontend reads location.pathname.
+    app.router.add_get("/c/{chat_id}", root_handler)
     app.router.add_get("/login", login_page)
 
     # Auth API
