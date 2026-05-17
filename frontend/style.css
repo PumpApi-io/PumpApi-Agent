@@ -306,6 +306,7 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 }
 .msg-edit textarea {
   width: 100%; min-height: 80px; resize: vertical;
+  field-sizing: content;
 }
 .msg-edit-actions { display: flex; gap: 8px; margin-top: 8px; justify-content: flex-end; }
 

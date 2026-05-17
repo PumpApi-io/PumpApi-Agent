@@ -256,6 +256,9 @@ const App = {
       const m = (typeof window !== 'undefined' ? window.location.pathname : '').match(/^\/c\/([0-9a-f]{32})/);
       return m ? m[1] : null;
     }
+    function isNewChatURL() {
+      return typeof window !== 'undefined' && window.location.pathname === '/c/new_chat';
+    }
     function setURLForChat(id, { replace = false } = {}) {
       if (typeof window === 'undefined') return;
       const target = id ? `/c/${id}` : '/';
@@ -264,10 +267,18 @@ const App = {
         window.history, null, '', target,
       );
     }
+    function setURLForNewChat({ replace = false } = {}) {
+      if (typeof window === 'undefined') return;
+      if (window.location.pathname === '/c/new_chat') return;
+      (replace ? window.history.replaceState : window.history.pushState).call(
+        window.history, null, '', '/c/new_chat',
+      );
+    }
     if (typeof window !== 'undefined') {
       window.addEventListener('popstate', () => {
         const id = chatIdFromURL();
         if (id && id !== activeChatId.value) openChat(id);
+        else if (!id && isNewChatURL()) newChat({ replace: true });
       });
     }
 
@@ -283,10 +294,12 @@ const App = {
       const urlId = chatIdFromURL();
       if (urlId) {
         await openChat(urlId);
+      } else if (isNewChatURL()) {
+        await newChat({ replace: true });
       } else if (chats.value.length) {
         await openChat(chats.value[0].id);
       } else {
-        await newChat();
+        await newChat({ replace: true });
       }
       document.addEventListener('keydown', onGlobalKey);
       document.addEventListener('click', onGlobalClick);
@@ -497,8 +510,31 @@ const App = {
       }, 1000);
     }
 
+    // Live updates from the backend (notify.py writes -> SSE event -> we
+    // refetch messages). One EventSource per active chat; closed on switch.
+    let eventSource = null;
+    function stopEventStream() {
+      if (eventSource) { eventSource.close(); eventSource = null; }
+    }
+    function startEventStreamFor(chatId) {
+      stopEventStream();
+      const es = new EventSource(`/api/chats/${chatId}/events`);
+      eventSource = es;
+      es.onmessage = async () => {
+        if (activeChatId.value !== chatId || streaming.value) return;
+        try {
+          const ms = await api(`/api/chats/${chatId}/messages`);
+          messages.value = ms;
+          await nextTick();
+          scrollToBottom();
+        } catch (e) { /* ignore */ }
+      };
+      // Browser auto-reconnects on error; nothing to do here.
+    }
+
     async function openChat(id) {
       stopPolling();
+      stopEventStream();
       activeChatId.value = id;
       setURLForChat(id);
       sidebarOpen.value = false;
@@ -511,6 +547,7 @@ const App = {
         messages.value = ms;
         await nextTick();
         scrollToBottom(true);
+        startEventStreamFor(id);
         // If the tail is an assistant message that may still be streaming on
         // the backend (recent + reasonable length is allowed to grow), poll
         // until it stops changing.
@@ -521,16 +558,16 @@ const App = {
       } catch (e) { /* ignore */ }
     }
 
-    async function newChat() {
-      const r = await api('/api/chats', { method: 'POST', body: JSON.stringify({ model: selectedModel.value }) });
-      activeChatId.value = r.id;
-      setURLForChat(r.id);
+    async function newChat({ replace = false } = {}) {
+      stopPolling();
+      stopEventStream();
+      activeChatId.value = null;
+      setURLForNewChat({ replace });
       sidebarOpen.value = false;
       messages.value = [];
       liveAssistant.visible = false;
       liveAssistant.content = '';
       liveAssistant.tools = [];
-      // chat won't appear in list until first user message lands (backend filters)
     }
 
     function scrollToBottom(force = false) {
@@ -791,19 +828,26 @@ const App = {
       liveAssistant.tools = [];
       errorBanner.value = null;
 
-      const reqBody = {
-        chat_id: activeChatId.value,
-        model: selectedModel.value,
-      };
-      if (message) reqBody.message = message;
-      if (assistantForUserId) {
-        reqBody.assistant_for_user_id = assistantForUserId;
-        // backend ignores `message` in this mode; pass empty for safety
-        reqBody.message = { content: '', attachments: [] };
-      }
-
       abortController = new AbortController();
       try {
+        if (!activeChatId.value) {
+          const r = await api('/api/chats', { method: 'POST', body: JSON.stringify({ model: selectedModel.value }) });
+          activeChatId.value = r.id;
+          setURLForChat(r.id, { replace: isNewChatURL() });
+          startEventStreamFor(r.id);
+        }
+
+        const reqBody = {
+          chat_id: activeChatId.value,
+          model: selectedModel.value,
+        };
+        if (message) reqBody.message = message;
+        if (assistantForUserId) {
+          reqBody.assistant_for_user_id = assistantForUserId;
+          // backend ignores `message` in this mode; pass empty for safety
+          reqBody.message = { content: '', attachments: [] };
+        }
+
         const res = await fetch('/api/chat/stream', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
