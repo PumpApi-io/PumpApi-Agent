@@ -298,7 +298,7 @@ const App = {
         if (lightboxUrl.value) lightboxUrl.value = null;
         else if (textPreview.value) textPreview.value = null;
         else if (skillPreview.value) skillPreview.value = null;
-        else if (skillImporter.value && !skillImporter.value.busy) skillImporter.value = null;
+        else if (skillImporter.value && !skillImporter.value.busy) closeSkillImport();
         else if (mcpForm.value && !mcpForm.value.busy) mcpForm.value = null;
         else if (memEditor.value) memEditor.value = null;
         else if (panel.value) panel.value = null;
@@ -1209,6 +1209,20 @@ const App = {
     function startSkillImport() {
       skillImporter.value = { source: 'paste', name: '', content: '', url: '', busy: false };
     }
+    function closeSkillImport() {
+      const f = skillImporter.value;
+      if (!f || f.busy) return;
+      const dirty = (f.name && f.name.trim()) || (f.content && f.content.trim()) || (f.url && f.url.trim());
+      if (dirty) {
+        confirm.value = {
+          message: 'Discard unsaved changes?',
+          confirmLabel: 'Discard',
+          onYes: () => { confirm.value = null; skillImporter.value = null; },
+        };
+        return;
+      }
+      skillImporter.value = null;
+    }
     async function submitSkillImport() {
       const f = skillImporter.value;
       if (!f || f.busy) return;
@@ -1345,7 +1359,7 @@ const App = {
       panel, messengerStatus,
       memEditor, openMemory, saveMemory,
       skillsList, skillsLoading, skillImporter, skillPreview,
-      openSkills, viewSkill, saveSkillEdit, closeSkillPreview, startSkillImport, submitSkillImport, deleteSkill,
+      openSkills, viewSkill, saveSkillEdit, closeSkillPreview, startSkillImport, closeSkillImport, submitSkillImport, deleteSkill,
       toolsList, toolsLoading, openTools, toggleTool,
       mcpList, mcpEmpty, mcpForm, openMcp, startMcpAdd, submitMcpAdd, removeMcp,
       liveAssistant,
@@ -1848,7 +1862,7 @@ const App = {
       </div>
 
       <!-- Skill importer (paste OR github URL) -->
-      <div v-if="skillImporter" class="modal-backdrop" @click="!skillImporter.busy && (skillImporter = null)">
+      <div v-if="skillImporter" class="modal-backdrop" @click="closeSkillImport">
         <div class="modal modal-wide" @click.stop>
           <h2>+ Add skill</h2>
           <div class="tab-bar">
@@ -1871,7 +1885,7 @@ const App = {
             </div>
           </div>
           <div class="modal-actions">
-            <button @click="skillImporter = null" :disabled="skillImporter.busy">Cancel</button>
+            <button @click="closeSkillImport" :disabled="skillImporter.busy">Cancel</button>
             <button class="primary" @click="submitSkillImport" :disabled="skillImporter.busy">{{ skillImporter.busy ? 'Installing…' : 'Install' }}</button>
           </div>
         </div>
