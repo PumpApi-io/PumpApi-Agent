@@ -503,6 +503,74 @@ def _siblings(c: sqlite3.Connection, msg_id: int, chat_id: str, parent_id: Optio
     return [r["id"] for r in rows]
 
 
+# ---------------------------------------------------------------------------
+# SSE: live notifications when a chat changes (e.g. notify.py inserts a row).
+# In-memory pub/sub — one process, no extra deps. Each subscriber is an
+# asyncio.Queue; publishers put a small JSON dict, the SSE handler drains it.
+# ---------------------------------------------------------------------------
+_subscribers: dict[str, set[asyncio.Queue]] = {}
+
+
+def _publish(chat_id: str, event: dict) -> None:
+    for q in list(_subscribers.get(chat_id, ())):
+        try:
+            q.put_nowait(event)
+        except asyncio.QueueFull:
+            pass
+
+
+async def api_chat_events(request: web.Request) -> web.StreamResponse:
+    chat_id = request.match_info["chat_id"]
+    resp = web.StreamResponse(
+        status=200,
+        headers={
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+    await resp.prepare(request)
+
+    q: asyncio.Queue = asyncio.Queue(maxsize=64)
+    _subscribers.setdefault(chat_id, set()).add(q)
+    try:
+        await resp.write(b": ok\n\n")
+        while True:
+            try:
+                event = await asyncio.wait_for(q.get(), timeout=25)
+                await resp.write(f"data: {json.dumps(event)}\n\n".encode())
+            except asyncio.TimeoutError:
+                await resp.write(b": ping\n\n")  # keep-alive
+    except (ConnectionResetError, asyncio.CancelledError):
+        pass
+    finally:
+        subs = _subscribers.get(chat_id)
+        if subs:
+            subs.discard(q)
+            if not subs:
+                _subscribers.pop(chat_id, None)
+    return resp
+
+
+async def api_internal_notify(request: web.Request) -> web.Response:
+    """Localhost-only hook: notify.py calls this after writing to the DB so
+    SSE subscribers get woken up immediately. No auth — bound to loopback
+    via the peer-IP check below."""
+    peer = request.transport.get_extra_info("peername") if request.transport else None
+    host = peer[0] if peer else ""
+    if host not in ("127.0.0.1", "::1"):
+        return web.json_response({"error": "forbidden"}, status=403)
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid_json"}, status=400)
+    chat_id = body.get("chat_id")
+    if not chat_id:
+        return web.json_response({"error": "missing_chat_id"}, status=400)
+    _publish(str(chat_id), {"type": "messages_changed"})
+    return web.json_response({"ok": True})
+
+
 async def api_list_messages(request: web.Request) -> web.Response:
     chat_id = request.match_info["chat_id"]
     with db() as c:
@@ -1652,6 +1720,8 @@ def create_app() -> web.Application:
     app.router.add_patch("/api/chats/{chat_id}", require_auth(api_patch_chat))
     app.router.add_delete("/api/chats/{chat_id}", require_auth(api_delete_chat))
     app.router.add_get("/api/chats/{chat_id}/messages", require_auth(api_list_messages))
+    app.router.add_get("/api/chats/{chat_id}/events", require_auth(api_chat_events))
+    app.router.add_post("/internal/notify", api_internal_notify)
 
     # Messages
     app.router.add_patch("/api/messages/{msg_id}", require_auth(api_patch_message))
@@ -1701,7 +1771,7 @@ def create_app() -> web.Application:
 def main() -> None:
     app = create_app()
     log.info("PumpApi Agent starting on %s:%s", LISTEN_HOST, LISTEN_PORT)
-    web.run_app(app, host=LISTEN_HOST, port=LISTEN_PORT, access_log=None)
+    web.run_app(app, host=LISTEN_HOST, port=LISTEN_PORT, access_log=None, shutdown_timeout=2)
 
 
 if __name__ == "__main__":
