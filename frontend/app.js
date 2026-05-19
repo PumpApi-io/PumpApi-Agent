@@ -1460,10 +1460,11 @@ const App = {
         <div class="chats-list" ref="chatsListRef" @scroll.passive="onChatsScroll">
           <div class="chats-spacer" :style="{ height: (visibleChats.total * CHAT_ROW_HEIGHT) + 'px' }">
             <div class="chats-window" :style="{ transform: 'translateY(' + (Math.floor(visibleChats.items[0]?.index || 0) * CHAT_ROW_HEIGHT) + 'px)' }">
-              <div v-for="entry in visibleChats.items" :key="entry.chat.id"
+              <a v-for="entry in visibleChats.items" :key="entry.chat.id"
                    class="chat-item" :class="{ active: entry.chat.id === activeChatId }"
                    :style="{ height: CHAT_ROW_HEIGHT + 'px' }"
-                   @click="renamingChatId !== entry.chat.id && openChat(entry.chat.id)">
+                   :href="'/c/' + entry.chat.id"
+                   @click.exact.prevent="renamingChatId !== entry.chat.id && openChat(entry.chat.id)">
                 <span v-if="entry.chat.pinned" class="pin-icon">📌</span>
                 <input v-if="renamingChatId === entry.chat.id" class="rename-input"
                        v-model="renameValue"
@@ -1478,7 +1479,7 @@ const App = {
                   <button @click="startRename(entry.chat)">Rename</button>
                   <button class="danger" @click="deleteChatPrompt(entry.chat)">Delete</button>
                 </div>
-              </div>
+              </a>
             </div>
           </div>
           <div v-if="chatsLoading" class="chats-loading">Loading…</div>

@@ -141,6 +141,10 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
      Keep padding tight so content fits comfortably in 38px. */
   position: relative; padding: 0 10px; border-radius: 7px;
   cursor: pointer; display: flex; align-items: center; gap: 8px;
+  /* Rendered as <a href="/c/<id>"> so the browser shows the URL on hover and
+     supports right-click "Open in new tab" / middle-click / Ctrl+click. Strip
+     the default anchor styling so it still looks like a sidebar row. */
+  text-decoration: none;
   color: var(--text); font-size: 14px;
   box-sizing: border-box;
 }
