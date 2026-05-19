@@ -11,4 +11,5 @@ if [ "$before" != "$after" ]; then
 systemctl restart pumpapi-agent.service
 hermes update -y
 systemctl restart hermes-gateway
+python3 update_hermes_soul_and_skills.py
 fi
