@@ -20,7 +20,6 @@ apt-get -y \
 echo PUMPAPI_API_KEY=${PUMPAPI_API_KEY} >> /etc/environment
 echo AGENT_SOLANA_BASE58_PRIVATE_KEY=${AGENT_SOLANA_BASE58_PRIVATE_KEY} >> /etc/environment
 echo AGENT_SOLANA_BASE58_PUBLIC_KEY=${AGENT_SOLANA_BASE58_PUBLIC_KEY} >> /etc/environment
-apt install git -y
 apt install nodejs npm -y
 export PATH="/root/.local/bin:$PATH"
 chmod +x /root/pumpapi-agent/scripts/update.sh
