@@ -40,7 +40,7 @@ API_SERVER_PORT=61317
 API_SERVER_KEY=$PUMPAPI_API_KEY
 PUMPAPI_API_KEY=$PUMPAPI_API_KEY
 EOF
-sudo hermes gateway install --system --run-as-user root
+yes | sudo hermes gateway install --system --run-as-user root
 sudo systemctl enable --now hermes-gateway
 python3 /root/pumpapi-agent/scripts/update_hermes_soul_and_skills.py
 export PYTHONPATH=/root/.hermes/skills/pumpapi-agent/notify-user/scripts:$PYTHONPATH
