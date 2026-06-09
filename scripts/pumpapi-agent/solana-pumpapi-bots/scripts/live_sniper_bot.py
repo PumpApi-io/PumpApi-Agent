@@ -15,7 +15,7 @@ from notify_user import notify
 
 CHAT_ID = # CHAT ID YOU GOT USING NOTIFY USER SKILL
 PLATFORM = # PLATFORM YOU GOT USING NOTIFY USER SKILL
-MY_SOLANA_B58_PRIVATE_KEY = # YOUR PRIVATE KEY FROM /etc/environment
+MY_SOLANA_B58_PRIVATE_KEY = # YOUR PRIVATE KEY FROM /etc/environment , put it here, don't use os.environ.get
 MY_SOLANA_B58_PUBLIC_KEY = # YOUR PUBLIC KEY FROM /etc/environment
 
 processed_signatures = TTLCache(maxsize=10000, ttl=300)
