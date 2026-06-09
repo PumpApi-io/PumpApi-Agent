@@ -5,7 +5,7 @@ Usage from any bot:
 
     from notify import notify
     notify("api_server", "0db44d63f25b499eb3d4f2a7338f29ae", "hello")
-    notify("telegram",   "-1001234567890",                   "hello")
+    notify("telegram",   "1001234567890",                   "hello")
     notify("discord",    "999888777",                        "hello", thread_id="555")
     notify("api_server", chat_id, "see chart", image="/tmp/chart.png")
 
