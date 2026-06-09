@@ -36,7 +36,7 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
 LISTEN_HOST = "0.0.0.0"
-LISTEN_PORT = 61318 
+LISTEN_PORT = 61318
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("pumpapi-agent")
@@ -256,12 +256,20 @@ async def api_me(request: web.Request) -> web.Response:
 # Models
 # ---------------------------------------------------------------------------
 
+# Models are cached to disk for MODELS_CACHE_TTL seconds. After the TTL the
+# next request refetches from upstream so server-side model changes show up
+# without restarting the backend. We key freshness off the file mtime.
+MODELS_CACHE_TTL = 30 * 60  # 30 minutes
+
+
 async def api_models(request: web.Request) -> web.Response:
     if MODELS_CACHE.exists():
         try:
-            cached = json.loads(MODELS_CACHE.read_text())
-            if isinstance(cached, list) and cached:
-                return web.json_response(cached)
+            age = time.time() - MODELS_CACHE.stat().st_mtime
+            if age < MODELS_CACHE_TTL:
+                cached = json.loads(MODELS_CACHE.read_text())
+                if isinstance(cached, list) and cached:
+                    return web.json_response(cached)
         except Exception:
             pass
     # fetch from upstream
@@ -276,7 +284,16 @@ async def api_models(request: web.Request) -> web.Response:
             models = [{"id": "hermes-agent"}]
     except Exception as e:
         log.warning("models fetch failed: %s", e)
-        models = [{"id": "hermes-agent"}]
+        # Upstream unreachable: prefer a (possibly stale) cache over the dummy
+        # fallback so we don't clobber a good list with placeholder data.
+        if MODELS_CACHE.exists():
+            try:
+                cached = json.loads(MODELS_CACHE.read_text())
+                if isinstance(cached, list) and cached:
+                    return web.json_response(cached)
+            except Exception:
+                pass
+        return web.json_response([{"id": "hermes-agent"}])
     try:
         MODELS_CACHE.write_text(json.dumps(models))
     except Exception:
@@ -778,6 +795,40 @@ async def api_set_model(request: web.Request) -> web.Response:
     if not ok2:
         return web.json_response({"error": "restart_failed", "detail": msg2}, status=500)
     return web.json_response({"ok": True, "model": model})
+
+
+# ---------------------------------------------------------------------------
+# Agent core (Hermes) update: check for updates and apply them.
+#   GET  /api/update/check  -> runs `hermes update --check`, parses the output
+#                              into {up_to_date: bool, output: str}.
+#   POST /api/update/apply  -> runs `hermes update` then restarts the gateway.
+# Applying an update restarts hermes-gateway, which aborts any running bots /
+# in-flight streams — the frontend warns the user before calling apply.
+# ---------------------------------------------------------------------------
+
+def _parse_update_check(out: str) -> bool:
+    """Return True if the output indicates we're already up to date."""
+    low = out.lower()
+    return "up to date" in low or "up-to-date" in low
+
+
+async def api_update_check(request: web.Request) -> web.Response:
+    ok, msg = await _run("hermes", "update", "--check", timeout=120, max_output=8000)
+    if not ok:
+        return web.json_response(
+            {"error": "check_failed", "output": msg}, status=500
+        )
+    return web.json_response({"up_to_date": _parse_update_check(msg), "output": msg})
+
+
+async def api_update_apply(request: web.Request) -> web.Response:
+    ok, msg = await _run("hermes", "update", "-y", timeout=600, max_output=8000)
+    # Always restart the gateway so the updated code is loaded, regardless of
+    # whether the update reported success.
+    ok2, msg2 = await _run("systemctl", "restart", "hermes-gateway", timeout=120)
+    return web.json_response(
+        {"ok": ok, "output": msg, "restarted": ok2, "restart_output": msg2}
+    )
 
 
 _GATEWAY_KEY_MAP = {
@@ -1561,14 +1612,9 @@ async def api_chat_stream(request: web.Request) -> web.StreamResponse:
     }
     messages = [context_sys] + messages
     payload = {"model": model, "messages": messages, "stream": True}
-    # Pass our chat_id as the Hermes session id so HERMES_SESSION_ID in the
-    # agent's env matches the chat_id we surface in the context system prompt.
-    # Without this header api_server derives its own session id and the two
-    # diverge — same conversation, two different identifiers.
     headers = {
         "Authorization": f"Bearer {CONFIG['API_SERVER_KEY']}",
         "Content-Type": "application/json",
-        "X-Hermes-Session-Id": chat_id,
     }
 
     # Pre-insert the assistant row so a reloaded tab can locate the in-progress
@@ -1712,6 +1758,10 @@ def create_app() -> web.Application:
     app.router.add_get("/api/models", require_auth(api_models))
     app.router.add_get("/api/model", require_auth(api_get_model))
     app.router.add_post("/api/model", require_auth(api_set_model))
+
+    # Agent core (Hermes) updates
+    app.router.add_get("/api/update/check", require_auth(api_update_check))
+    app.router.add_post("/api/update/apply", require_auth(api_update_apply))
 
     # Chats
     app.router.add_get("/api/chats", require_auth(api_list_chats))
