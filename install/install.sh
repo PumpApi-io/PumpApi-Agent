@@ -30,7 +30,7 @@ curl -fsSL https://raw.githubusercontent.com/PumpApi-io/hermes-agent/main/script
 hermes config set model.provider custom
 hermes config set model.base_url https://api.pumpapi.ai/v1
 hermes config set model.api_key $PUMPAPI_API_KEY
-hermes config set model.default anthropic/claude-opus-4-8
+hermes config set model.default ChatGPT | Smartest
 hermes config set approvals.mode off
 hermes config set browser.provider local
 sudo tee /root/.hermes/.env > /dev/null <<EOF
