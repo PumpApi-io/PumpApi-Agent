@@ -1560,7 +1560,7 @@ const App = {
         <div class="chat-area" ref="chatAreaRef" @click="onChatClick">
           <div v-if="!messages.length && !liveAssistant.visible" class="empty-state">
             <h2>PumpApi Agent</h2>
-            <div>Send a message to start chatting with PumpApi.</div>
+            <div>What do you want done today?</div>
           </div>
           <div v-else class="msg-list">
             <div v-for="m in messages" :key="m.id" class="msg-row" :class="m.role">
