@@ -33,6 +33,10 @@ hermes config set model.api_key $PUMPAPI_API_KEY
 hermes config set model.default ChatGPT-Smartest
 hermes config set approvals.mode off
 hermes config set browser.provider local
+hermes config set providers.pumpapi.name PumpApi
+hermes config set providers.pumpapi.base_url https://api.pumpapi.ai/v1
+hermes config set providers.pumpapi.api_key $PUMPAPI_API_KEY
+hermes config set providers.pumpapi.discover_models true
 sudo tee /root/.hermes/.env > /dev/null <<EOF
 API_SERVER_ENABLED=true
 API_SERVER_HOST=127.0.0.1
