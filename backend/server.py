@@ -36,7 +36,7 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
 LISTEN_HOST = "0.0.0.0"
-LISTEN_PORT = 61318
+LISTEN_PORT = 61318 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("pumpapi-agent")
@@ -1561,9 +1561,14 @@ async def api_chat_stream(request: web.Request) -> web.StreamResponse:
     }
     messages = [context_sys] + messages
     payload = {"model": model, "messages": messages, "stream": True}
+    # Pass our chat_id as the Hermes session id so HERMES_SESSION_ID in the
+    # agent's env matches the chat_id we surface in the context system prompt.
+    # Without this header api_server derives its own session id and the two
+    # diverge — same conversation, two different identifiers.
     headers = {
         "Authorization": f"Bearer {CONFIG['API_SERVER_KEY']}",
         "Content-Type": "application/json",
+        "X-Hermes-Session-Id": chat_id,
     }
 
     # Pre-insert the assistant row so a reloaded tab can locate the in-progress
