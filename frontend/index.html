@@ -20,6 +20,15 @@
       }
     }
   </script>
-  <script type="module" src="/app.js"></script>
+  <script type="module">
+    // Cache-bust app.js using its Last-Modified time so updates always load.
+    let v = Date.now();
+    try {
+      const r = await fetch('/app.js', { method: 'HEAD', cache: 'no-store' });
+      const lm = r.headers.get('Last-Modified');
+      if (lm) v = new Date(lm).getTime() || v;
+    } catch (e) {}
+    await import('/app.js?v=' + v);
+  </script>
 </body>
 </html>

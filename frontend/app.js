@@ -189,6 +189,15 @@ const App = {
     const mcpEmpty = ref(true);
     const mcpForm = ref(null); // {name, url, busy}
 
+    // ---- Agent core update checker ----
+    // status: null = idle/not checked; 'up_to_date'; 'available' = update found
+    const updateState = reactive({
+      checking: false,
+      applying: false,
+      status: null,   // null | 'up_to_date' | 'available'
+      output: '',      // raw CLI output (for display / debugging)
+    });
+
     let abortController = null;
     let pasteCounter = 0;
 
@@ -1135,6 +1144,11 @@ const App = {
         apiKey.value = me.api_key || '';
       } catch (e) {}
       panel.value = null;
+      // Reset the update checker so it starts fresh each time settings open.
+      updateState.checking = false;
+      updateState.applying = false;
+      updateState.status = null;
+      updateState.output = '';
       settingsOpen.value = true;
     }
 
@@ -1159,6 +1173,50 @@ const App = {
       } catch (e) {
         toast(`Save failed: ${e.message || e}`, 'error');
       }
+    }
+
+    // ---- Agent core (Hermes) update ----
+    // Check for an available update. Parses the backend's {up_to_date} result.
+    async function checkForUpdate() {
+      if (updateState.checking || updateState.applying) return;
+      updateState.checking = true;
+      updateState.status = null;
+      updateState.output = '';
+      try {
+        const r = await api('/api/update/check');
+        updateState.output = (r && r.output) || '';
+        updateState.status = (r && r.up_to_date) ? 'up_to_date' : 'available';
+        if (updateState.status === 'up_to_date') toast('No updates available');
+      } catch (e) {
+        updateState.status = null;
+        toast(`Update check failed: ${e.message || e}`, 'error');
+      } finally {
+        updateState.checking = false;
+      }
+    }
+
+    // Apply the update. Warns first: a restart aborts any running bots.
+    function applyUpdate() {
+      if (updateState.applying) return;
+      confirm.value = {
+        message: '⚠️ Updating the agent core will restart it. Any bots you have running will be stopped, and any response being generated right now will be aborted. Continue?',
+        confirmLabel: 'Update now',
+        danger: true,
+        onYes: async () => {
+          confirm.value = null;
+          updateState.applying = true;
+          try {
+            const r = await api('/api/update/apply', { method: 'POST' });
+            updateState.output = (r && r.output) || '';
+            updateState.status = 'up_to_date';
+            toast('✅ Agent core updated and restarted');
+          } catch (e) {
+            toast(`Update failed: ${e.message || e}`, 'error');
+          } finally {
+            updateState.applying = false;
+          }
+        },
+      };
     }
 
     // ---- Messenger connection status ----
@@ -1406,6 +1464,7 @@ const App = {
       openSkills, viewSkill, saveSkillEdit, closeSkillPreview, startSkillImport, closeSkillImport, submitSkillImport, deleteSkill,
       toolsList, toolsLoading, openTools, toggleTool,
       mcpList, mcpEmpty, mcpForm, openMcp, startMcpAdd, submitMcpAdd, removeMcp,
+      updateState, checkForUpdate, applyUpdate,
       liveAssistant,
       textareaRef, chatAreaRef,
       // chat-list pagination + virtual scroll
@@ -1760,6 +1819,26 @@ const App = {
             <div class="api-key-row">
               <input type="text" :value="apiKeyVisible ? apiKey : maskedKey(apiKey)" readonly />
               <button @click="apiKeyVisible = !apiKeyVisible">{{ apiKeyVisible ? '🙈' : '👁' }}</button>
+            </div>
+          </div>
+
+          <div class="field" style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+            <div class="settings-section-title" style="margin:0;">🔄 Agent core</div>
+            <button @click="checkForUpdate" :disabled="updateState.checking || updateState.applying">
+              {{ updateState.checking ? 'Checking…' : 'Check for updates' }}
+            </button>
+          </div>
+          <div class="field">
+            <p v-if="updateState.status === 'up_to_date'" class="settings-hint" style="margin-top:8px;color:var(--text-dim);">
+              ✅ No updates available — you're on the latest version.
+            </p>
+            <div v-else-if="updateState.status === 'available'" style="margin-top:8px;">
+              <p class="settings-hint" style="color:#e0a800;">
+                ⚠️ An update is available. If you have any bots running, updating will stop them.
+              </p>
+              <button class="primary" @click="applyUpdate" :disabled="updateState.applying">
+                {{ updateState.applying ? 'Updating…' : 'Update now' }}
+              </button>
             </div>
           </div>
 
