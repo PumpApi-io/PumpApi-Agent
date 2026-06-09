@@ -70,6 +70,7 @@ The `scripts/` folder of this skill contains ready-made bots and examples you ca
 
 - `live_sniper_bot.py` — a complete live bot: buys new tokens with a big dev buy, TP 50%, SL 20%, sells on 5 min of inactivity. Drop-in usable as-is, just fill in the CHAT_ID / PLATFORM / keys.
 - `backtest_sniper_strategy.py` — backtests the same sniper strategy on pumpapi historical replay (~400 MB/hour download, replay starts 2026-04-18). Decision logic is copied 1:1 from the live bot; execution is modeled with latency.
+- `copytrader_bot.py` — copytrader example: copies wallets from a set, buys 1/10 up to max 0.01 SOL, skips risky re-entries, mirrors sells by rounded-up percentage, only trusted pump.fun / pump-amm pools.
 - `sell_all_tokens.py` — dumps every token in the wallet (100% amount, 100% slippage, guaranteed delivery), optional burn fallback.
 
 Read these first and write new code in the same style.
