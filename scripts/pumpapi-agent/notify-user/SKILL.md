@@ -21,10 +21,10 @@ Do NOT use cron for this — cron only runs at fixed intervals, can only kick of
 
 ## How it works
 
-There is a tiny module `notify.py` shipped with this skill (see `scripts/notify.py`). It exposes one function:
+There is a tiny module `notify_user.py` shipped with this skill (see `scripts/notify_user.py`). It exposes one function:
 
 ```python
-from notify import notify
+from notify_user import notify
 
 notify(platform, chat_id, text, thread_id=None, image=None)
 ```
@@ -36,11 +36,11 @@ notify(platform, chat_id, text, thread_id=None, image=None)
 
 ## Setup (do this once per script)
 
-### 1. Locate `notify.py`
+### 1. Locate `notify_user.py`
 
-`notify.py` is shipped inside THIS skill at `scripts/notify.py` — when you load the skill via `skill_view`, the response tells you the absolute skill directory; `notify.py` lives in its `scripts/` subfolder.
+`notify_user.py` is shipped inside THIS skill at `scripts/notify_user.py` — when you load the skill via `skill_view`, the response tells you the absolute skill directory; `notify_user.py` lives in its `scripts/` subfolder.
 
-You already able to import notify because step with export PYTHONPATH=/root/.hermes/skills/pumpapi-agent/notify-user/scripts:$PYTHONPATH already done.
+No need to copy `notify_user.py` into the project. `notify_user` can already be imported because this was done earlier: export PYTHONPATH=/root/.hermes/skills/pumpapi-agent/notify-user/scripts:$PYTHONPATH
 
 ### 2. Find which `(platform, chat_id)` to send to
 
@@ -73,7 +73,7 @@ The background script does NOT inherit the agent's env, so bake `platform`, `cha
 ## Minimal example
 
 ```python
-from notify import notify
+from notify_user import notify
 
 PLATFORM = "api_server"
 CHAT_ID  = "5efefd28fe1945c9a27476bbd765d8b8"   # from system prompt
