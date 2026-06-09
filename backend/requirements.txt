@@ -1,4 +1,0 @@
-aiohttp
-aiohttp-cors
-python-dotenv
-pyyaml
