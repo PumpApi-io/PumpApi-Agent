@@ -21,7 +21,7 @@ MY_SOLANA_B58_PUBLIC_KEY = # YOUR PUBLIC KEY FROM /etc/environment
 processed_signatures = TTLCache(maxsize=10000, ttl=300)
 
 WSOL = 'So11111111111111111111111111111111111111112'
-USDC  = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
+USDC  = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' # if the user doesn’t have USDC in their balance, avoid such quote tokens. Use the logic from the sell all tokens script to check token balances.
 global_dict = {'sol_price': 80}
 SOL_BUY_THRESHOLD = 20 # pump fee is 1.25%, so it’s disadvantageous for any dev to sell right after creation because the loss will be around 0.5 SOL
 SOL_AMOUNT_TO_BUY = 0.001
