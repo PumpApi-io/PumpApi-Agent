@@ -1376,7 +1376,7 @@ const App = {
     }
     function deleteSkill(name) {
       confirm.value = {
-        message: `Delete skill "${name}"? This removes the local copy; hub skills can be reinstalled.`,
+        message: `Delete skill "${name}"?\n\n⚠️ The agent will restart to apply this. All running bots and background jobs will be stopped.`,
         onYes: async () => {
           // Close confirm + drop from list optimistically — request can take
           // a while (gateway restart), don't make the user stare at a frozen modal.
@@ -1772,7 +1772,7 @@ const App = {
       <div v-if="confirm" class="modal-backdrop" @click="confirm = null">
         <div class="modal confirm-modal" @click.stop>
           <h2>Confirm</h2>
-          <p>{{ confirm.message }}</p>
+          <p style="white-space: pre-line;">{{ confirm.message }}</p>
           <div class="modal-actions">
             <button @click="confirm = null">Cancel</button>
             <button :class="confirm.danger === false ? 'primary' : 'primary danger'" @click="confirm.onYes">{{ confirm.confirmLabel || 'Delete' }}</button>
@@ -2000,10 +2000,10 @@ const App = {
           <div v-else class="skills-list">
             <div v-for="s in skillsList" :key="(s.category || '') + '/' + s.name" class="skill-row">
               <div class="skill-meta" @click="viewSkill(s.name)">
-                <div class="skill-name">{{ s.name }} <span v-if="s.category" class="skill-cat">{{ s.category }}</span><span v-if="s.bundled" class="skill-cat" title="Ships with the agent — can't be removed">bundled</span></div>
+                <div class="skill-name">{{ s.name }} <span v-if="s.category" class="skill-cat">{{ s.category }}</span><span v-if="s.bundled" class="skill-cat" title="Ships with the agent">bundled</span></div>
                 <div class="skill-desc">{{ s.description || '—' }}</div>
               </div>
-              <button v-if="!s.bundled" class="icon-btn danger" @click.stop="deleteSkill(s.name)" title="Remove">🗑</button>
+              <button class="icon-btn danger" @click.stop="deleteSkill(s.name)" title="Remove">🗑</button>
             </div>
             <div v-if="!skillsList.length" class="settings-hint">No skills installed.</div>
           </div>

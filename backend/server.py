@@ -1173,50 +1173,25 @@ async def api_install_skill(request: web.Request) -> web.Response:
 
 
 async def api_delete_skill(request: web.Request) -> web.Response:
+    """Delete ANY skill (bundled or local) by removing its directory, then
+    restart the gateway so the agent reloads its skill registry. Simple and
+    uniform — no special-casing hub vs local vs bundled, no interactive CLI."""
     name = request.match_info.get("name", "")
     sdir = _find_skill_dir(name)
     if not sdir:
         return web.json_response({"error": "not_found"}, status=404)
-    # Bundled skills (shipped with Hermes) cannot be removed — they live
-    # in skills/<category>/<name> and are listed in skills/.bundled_manifest.
-    bundled = HERMES_SKILLS_DIR / ".bundled_manifest"
-    if bundled.exists():
-        try:
-            names = {ln.split(":", 1)[0].strip() for ln in bundled.read_text("utf-8").splitlines() if ln.strip()}
-            if name in names:
-                return web.json_response({"error": "bundled", "detail": "This skill ships with the agent and can't be removed."}, status=400)
-        except Exception:
-            pass
-    # Local skills (under skills/local/) — just rm the dir.
+    # Safety: never delete anything outside the skills tree.
     try:
-        rel = sdir.relative_to(HERMES_SKILLS_DIR)
+        sdir.relative_to(HERMES_SKILLS_DIR)
     except ValueError:
         return web.json_response({"error": "outside_skills_dir"}, status=400)
-    if rel.parts and rel.parts[0] == "local":
-        import shutil
-        shutil.rmtree(sdir, ignore_errors=True)
-        asyncio.create_task(_restart_gateway())  # fire-and-forget — UX stays snappy
-        return web.json_response({"ok": True, "method": "rm"})
-    # Hub skills: `hermes skills uninstall` is interactive (Confirm [y/N]).
-    # Feed it y\n via stdin so the agent actually removes the skill.
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "hermes", "skills", "uninstall", sdir.name,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
-        out, _ = await asyncio.wait_for(proc.communicate(input=b"y\n"), timeout=60)
-    except asyncio.TimeoutError:
-        proc.kill()
-        return web.json_response({"error": "timeout"}, status=504)
-    msg = (out or b"").decode("utf-8", "replace")[-2000:]
-    # CLI returns 0 even on logical failures ("not a hub-installed skill") —
-    # surface that to the user instead of pretending success.
-    if proc.returncode != 0 or "Error:" in msg or "not a hub-installed" in msg:
-        return web.json_response({"error": "uninstall_failed", "detail": msg}, status=500)
-    asyncio.create_task(_restart_gateway())  # fire-and-forget
-    return web.json_response({"ok": True, "method": "hermes_uninstall", "output": msg[-500:]})
+    import shutil
+    shutil.rmtree(sdir, ignore_errors=True)
+    # Restart the gateway so the deleted skill drops out of the live registry.
+    # This kills the running agent and any bots/jobs it's running — the UI
+    # warns the user about that before they confirm.
+    await _restart_gateway()
+    return web.json_response({"ok": True, "method": "rm"})
 
 
 # ---- Tools / MCP ---------------------------------------------------------
@@ -1249,7 +1224,7 @@ async def _restart_gateway() -> tuple[bool, str]:
     The api_server holds its config + skill registry in memory at startup,
     so any change made via `hermes config set` / `hermes tools enable` etc.
     only takes effect after the gateway process is restarted."""
-    return await _run("systemctl", "restart", "hermes-gateway", timeout=90)
+    return await _run("hermes", "gateway", "restart", timeout=90)
 
 
 async def api_toggle_tool(request: web.Request) -> web.Response:
