@@ -124,6 +124,15 @@ const App = {
     // selectedModel is hydrated from hermes config (source of truth) in loadModels().
     // We start empty so the dropdown doesn't briefly flash a wrong/stale value.
     const selectedModel = ref('');
+
+    const modelMenuOpen = ref(false);
+    const activeModelTip = ref('');
+
+    function modelRealShort(m) {
+      const real = (m && m.real) || '';
+      if (!real) return '';
+      return real.includes('/') ? real.split('/').pop() : real;
+    }
     const draft = ref('');
     const draftAttachments = ref([]); // [{kind:'image'|'text', filename, dataUri?, text?, size}]
     const streaming = ref(false);
@@ -334,6 +343,28 @@ const App = {
       if (popoverChatId.value && !e.target.closest('.chat-item')) {
         popoverChatId.value = null;
       }
+      if (modelMenuOpen.value && !e.target.closest('.model-picker')) {
+        closeModelMenu();
+      }
+    }
+
+    function toggleModelMenu() {
+      modelMenuOpen.value = !modelMenuOpen.value;
+      activeModelTip.value = '';
+    }
+
+    function closeModelMenu() {
+      modelMenuOpen.value = false;
+      activeModelTip.value = '';
+    }
+
+    function toggleModelTip(id) {
+      activeModelTip.value = activeModelTip.value === id ? '' : id;
+    }
+
+    function pickModel(id) {
+      closeModelMenu();
+      onModelChange(id);
     }
 
     async function loadModels() {
@@ -355,11 +386,11 @@ const App = {
     // Switching model rewrites hermes config + restarts the hermes-gateway,
     // because api_server reads model.default once at startup. Any in-flight
     // streams get killed by the gateway restart, so we warn the user first.
-    function onModelChange(e) {
-      const newModel = e.target.value;
+    function onModelChange(newModelOrEvent) {
+      const newModel = typeof newModelOrEvent === 'string' ? newModelOrEvent : newModelOrEvent.target.value;
       const prev = selectedModel.value;
       if (newModel === prev) return;
-      e.target.value = prev; // keep dropdown on old value until user confirms
+      if (newModelOrEvent && newModelOrEvent.target) newModelOrEvent.target.value = prev; // keep dropdown on old value until user confirms
       const warn = streaming.value
         ? `Switching the model will restart the agent and abort the response that's currently being generated. The new model also applies to every linked messenger (Telegram / Discord / WhatsApp). Continue?`
         : `Switching the model will briefly restart the agent (a few seconds) and apply to every linked messenger (Telegram / Discord / WhatsApp). Continue?`;
@@ -1452,7 +1483,7 @@ const App = {
 
     return {
       // state
-      chats, activeChatId, messages, models, selectedModel, draft, draftAttachments,
+      chats, activeChatId, messages, models, selectedModel, modelMenuOpen, activeModelTip, draft, draftAttachments,
       streaming, settingsOpen, lightboxUrl, textPreview, confirm,
       popoverChatId, renamingChatId, renameValue,
       editingMessageId, editingValue,
@@ -1487,7 +1518,7 @@ const App = {
       openSettings, saveSection, maskedKey,
       renderMarkdown, escapeHtml,
       switchVersion, toggleTools, isToolsExpanded,
-      onModelChange, copyMessage,
+      onModelChange, toggleModelMenu, closeModelMenu, toggleModelTip, pickModel, modelRealShort, copyMessage,
     };
   },
 
@@ -1550,9 +1581,20 @@ const App = {
       <main class="main">
         <div class="header">
           <button class="icon-btn hamburger-btn" title="Menu" @click="toggleSidebar">☰</button>
-          <select class="model-select" :value="selectedModel" @change="onModelChange">
-            <option v-for="m in models" :key="m.id" :value="m.id">{{ m.id }}</option>
-          </select>
+          <div class="model-picker" @click.stop>
+            <button class="model-picker-btn" @click="toggleModelMenu">
+              <span>{{ selectedModel || 'Select model' }}</span>
+              <span class="model-picker-arrow">▾</span>
+            </button>
+            <div v-if="modelMenuOpen" class="model-menu">
+              <button v-for="m in models" :key="m.id" class="model-option" :class="{ selected: m.id === selectedModel }" @click="pickModel(m.id)">
+                <span class="model-option-name">{{ m.id }}</span>
+                <span v-if="modelRealShort(m)" class="model-info" tabindex="0" @click.stop="toggleModelTip(m.id)">?
+                  <span class="model-info-tip" :class="{ open: activeModelTip === m.id }">{{ modelRealShort(m) }}</span>
+                </span>
+              </button>
+            </div>
+          </div>
           <div class="spacer"></div>
           <button class="icon-btn" title="Settings" @click="openSettings">⚙</button>
         </div>

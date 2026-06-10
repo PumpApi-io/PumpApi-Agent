@@ -279,7 +279,7 @@ async def api_models(request: web.Request) -> web.Response:
             async with s.get("https://api.pumpapi.ai/v1/models", headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as r:
                 data = await r.json()
         items = data.get("data", []) if isinstance(data, dict) else []
-        models = [{"id": m.get("id")} for m in items if m.get("id")]
+        models = [{"id": m.get("id"), "real": m.get("real") or ""} for m in items if m.get("id")]
         if not models:
             models = [{"id": "hermes-agent"}]
     except Exception as e:
