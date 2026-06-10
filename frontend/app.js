@@ -1561,10 +1561,10 @@ const App = {
                        @keydown.enter="commitRename(entry.chat)"
                        @keydown.esc="cancelRename"
                        @blur="commitRename(entry.chat)"
-                       @click.stop ref="renameRef" />
+                       @click.stop.prevent ref="renameRef" />
                 <span v-else class="chat-title">{{ entry.chat.title || 'Untitled' }}</span>
-                <button class="chat-menu-btn" @click.stop="popoverChatId = popoverChatId === entry.chat.id ? null : entry.chat.id">⋮</button>
-                <div v-if="popoverChatId === entry.chat.id" class="popover" @click.stop>
+                <button class="chat-menu-btn" @click.stop.prevent="popoverChatId = popoverChatId === entry.chat.id ? null : entry.chat.id">⋮</button>
+                <div v-if="popoverChatId === entry.chat.id" class="popover" @click.stop.prevent>
                   <button @click="pinChat(entry.chat)">{{ entry.chat.pinned ? 'Unpin' : 'Pin' }}</button>
                   <button @click="startRename(entry.chat)">Rename</button>
                   <button class="danger" @click="deleteChatPrompt(entry.chat)">Delete</button>
