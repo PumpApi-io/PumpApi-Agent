@@ -195,7 +195,12 @@ const App = {
     window.addEventListener('keydown', ensureAudioCtx, { once: true });
     function playNotifySound() {
       soundEnabled.value = readSoundCookie(); // respect toggles from other tabs
-      if (!soundEnabled.value || !document.hidden) return;
+      if (!soundEnabled.value) return;
+      // "User is looking at this tab" = the tab is visible AND the browser
+      // window has input focus. Covers both cases: switching to another
+      // browser tab (document.hidden) and switching to another app while
+      // the browser window stays visible (!document.hasFocus()).
+      if (!document.hidden && document.hasFocus()) return;
       const ctx = ensureAudioCtx();
       if (!ctx || ctx.state !== 'running') return;
       const t = ctx.currentTime;
