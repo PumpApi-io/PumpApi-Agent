@@ -285,6 +285,20 @@ input:focus, textarea:focus, select:focus {
   cursor: pointer; padding: 6px; border-radius: 6px;
 }
 .header .icon-btn:hover { background: var(--bg-hover); color: var(--text); }
+.header .sound-btn,
+.header .settings-btn { display: flex; align-items: center; justify-content: center; position: relative; }
+.header .sound-btn svg,
+.header .settings-btn svg { width: 19px; height: 19px; display: block; }
+/* Custom tooltip — same look as .model-info-tip (the "?" in the model list) */
+.header .icon-btn .btn-tip {
+  display: none; position: absolute; top: calc(100% + 6px); right: 0;
+  background: var(--bg); border: 1px solid var(--border); color: var(--text);
+  padding: 5px 9px; border-radius: 6px; font-size: 12px; white-space: nowrap;
+  z-index: 90; box-shadow: 0 4px 12px rgba(0,0,0,.35);
+  pointer-events: none;
+}
+.header .icon-btn:hover .btn-tip,
+.header .icon-btn:focus-visible .btn-tip { display: block; }
 
 /* ---- Chat area ---- */
 .chat-area {

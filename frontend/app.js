@@ -167,6 +167,74 @@ const App = {
     };
     const toggleSidebar = () => { sidebarOpen.value = !sidebarOpen.value; };
     const closeSidebar = () => { sidebarOpen.value = false; };
+
+    // ---- Notification sound (plays only when the tab is hidden) ----
+    // Preference lives in a cookie so every tab on this domain sees the same
+    // value; we re-read it right before playing so toggling sound OFF in one
+    // tab instantly silences all the others.
+    function readSoundCookie() {
+      const m = document.cookie.match(/(?:^|;\s*)pumpapi_sound=([^;]*)/);
+      return m ? m[1] !== 'off' : true; // default: on
+    }
+    const soundEnabled = ref(readSoundCookie());
+    function toggleSound() {
+      soundEnabled.value = !soundEnabled.value;
+      document.cookie = `pumpapi_sound=${soundEnabled.value ? 'on' : 'off'}; path=/; max-age=31536000; SameSite=Lax`;
+    }
+    let audioCtx = null;
+    function ensureAudioCtx() {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return null;
+      if (!audioCtx) audioCtx = new AC();
+      if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+      return audioCtx;
+    }
+    // Browsers block audio until the user interacts with the page at least
+    // once — unlock the AudioContext on the first gesture.
+    window.addEventListener('pointerdown', ensureAudioCtx, { once: true });
+    window.addEventListener('keydown', ensureAudioCtx, { once: true });
+    function playNotifySound() {
+      soundEnabled.value = readSoundCookie(); // respect toggles from other tabs
+      if (!soundEnabled.value || !document.hidden) return;
+      const ctx = ensureAudioCtx();
+      if (!ctx || ctx.state !== 'running') return;
+      const t = ctx.currentTime;
+      // Modern messenger-style "pop + sparkle": a quick upward glide followed
+      // by a soft high shimmer, both with smooth exponential decays.
+      const out = ctx.createGain();
+      out.gain.value = 0.9;
+      out.connect(ctx.destination);
+
+      // Layer 1: the "pop" — sine gliding C5 → C6 in 90ms, fast decay.
+      const pop = ctx.createOscillator();
+      const popG = ctx.createGain();
+      pop.type = 'sine';
+      pop.frequency.setValueAtTime(523.25, t);
+      pop.frequency.exponentialRampToValueAtTime(1046.5, t + 0.09);
+      popG.gain.setValueAtTime(0, t);
+      popG.gain.linearRampToValueAtTime(0.22, t + 0.012);
+      popG.gain.exponentialRampToValueAtTime(0.0001, t + 0.28);
+      pop.connect(popG); popG.connect(out);
+      pop.start(t); pop.stop(t + 0.3);
+
+      // Layer 2: the "sparkle" — soft triangle E6 with a fifth (B6) on top,
+      // entering just after the pop, long airy tail.
+      [[1318.5, 0.10, 0.10], [1975.5, 0.13, 0.05]].forEach(([freq, dt, vol]) => {
+        const o = ctx.createOscillator();
+        const g = ctx.createGain();
+        o.type = 'triangle';
+        o.frequency.value = freq;
+        g.gain.setValueAtTime(0, t + dt);
+        g.gain.linearRampToValueAtTime(vol, t + dt + 0.02);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + dt + 0.7);
+        o.connect(g); g.connect(out);
+        o.start(t + dt); o.stop(t + dt + 0.75);
+      });
+    }
+    // Returning to the tab → sync the button with whatever the cookie says now.
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) soundEnabled.value = readSoundCookie();
+    });
     const settings = reactive({
       TELEGRAM_BOT_TOKEN: '',
       TELEGRAM_ALLOWED_USERS: '',
@@ -563,8 +631,15 @@ const App = {
       es.onmessage = async () => {
         if (activeChatId.value !== chatId || streaming.value) return;
         try {
+          const prevLastId = messages.value.length ? messages.value[messages.value.length - 1].id : null;
           const ms = await api(`/api/chats/${chatId}/messages`);
           messages.value = ms;
+          const newLast = ms.length ? ms[ms.length - 1] : null;
+          // A genuinely new message landed (notify.py / background bot) →
+          // ding if the user is looking at another tab/window.
+          if (newLast && newLast.id !== prevLastId && newLast.role !== 'user') {
+            playNotifySound();
+          }
           await nextTick();
           scrollToBottom();
         } catch (e) { /* ignore */ }
@@ -940,6 +1015,8 @@ const App = {
             'Please check your LLM Balance in your personal account at pumpapi.ai',
           );
         }
+        // Reply finished while the user is on another tab/window → ding.
+        if (gotContent) playNotifySound();
         try {
           const ms = await api(`/api/chats/${activeChatId.value}/messages`);
           messages.value = ms;
@@ -1485,6 +1562,7 @@ const App = {
       // state
       chats, activeChatId, messages, models, selectedModel, modelMenuOpen, activeModelTip, draft, draftAttachments,
       streaming, settingsOpen, lightboxUrl, textPreview, confirm,
+      soundEnabled, toggleSound,
       popoverChatId, renamingChatId, renameValue,
       editingMessageId, editingValue,
       settings, apiKey, apiKeyVisible,
@@ -1596,7 +1674,21 @@ const App = {
             </div>
           </div>
           <div class="spacer"></div>
-          <button class="icon-btn" title="Settings" @click="openSettings">⚙</button>
+          <button class="icon-btn sound-btn" @click="toggleSound">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+              <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
+              <line v-if="!soundEnabled" x1="3" y1="3" x2="21" y2="21"/>
+            </svg>
+            <span class="btn-tip">{{ soundEnabled ? 'Sound on' : 'Sound off' }}</span>
+          </button>
+          <button class="icon-btn settings-btn" @click="openSettings">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+            </svg>
+            <span class="btn-tip">Settings</span>
+          </button>
         </div>
 
         <div class="chat-area" ref="chatAreaRef" @click="onChatClick">
