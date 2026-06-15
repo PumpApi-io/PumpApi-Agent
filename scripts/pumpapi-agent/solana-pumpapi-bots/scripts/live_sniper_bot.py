@@ -67,7 +67,8 @@ async def make_pumpapi_trade(aiohttp_session, action, mint_address, quote_mint_a
             our_purchase_event = None
             for i in range (30): # wait  3 sec to get tx from the data stream - no tx - skip.
                 await asyncio.sleep(0.1)
-                events_from_our_tx = processed_signatures.get(response['signature'], [])
+                signature = response['signature']
+                events_from_our_tx = processed_signatures.get(signature, [])
                 for event in events_from_our_tx:
                     if event['action'] == action and event['mint'] == mint_address:
                         our_purchase_event = event
@@ -82,7 +83,7 @@ async def make_pumpapi_trade(aiohttp_session, action, mint_address, quote_mint_a
                             bought_mints[mint_address]['quote_amount_spent'] = our_purchase_event['quoteAmount']
                             bought_mints[mint_address]['entry_price'] = our_purchase_event['price']
                             logging.info(f'BUY SUCCESS! {our_purchase_event}\n {ui_quote_name} balance - {quote_balance}')
-                            notify(platform = PLATFORM, chat_id = CHAT_ID, text=f"🟢 Sniper BUY\n\n🪙 Mint: {mint_address}\n📦 Tokens received: {our_purchase_event['tokenAmount']}\n💰 Spent: {our_purchase_event['quoteAmount']} {ui_quote_name}\n📊 Entry price: {our_purchase_event['price']}\n🏦 {ui_quote_name} balance: {quote_balance}")
+                            notify(platform = PLATFORM, chat_id = CHAT_ID, text=f"🟢 Sniper BUY\n\n🧾 Mint: {mint_address}\n📦 Tokens received: {our_purchase_event['tokenAmount']}\n💰 Spent: {our_purchase_event['quoteAmount']} {ui_quote_name}\n📊 Entry price: {our_purchase_event['price']}\n🏷️ Signature: {signature}\n🏦 {ui_quote_name} balance: {quote_balance}")
                         elif action == 'sell':
                             bought_mints[mint_address]['sell_confirmed'] = True
                             bought_mints[mint_address]['quote_amount_got'] = our_purchase_event['quoteAmount']
@@ -91,7 +92,7 @@ async def make_pumpapi_trade(aiohttp_session, action, mint_address, quote_mint_a
                             quote_amount_spent = bought_mints[mint_address]['quote_amount_spent']
                             profit = quote_amount_got - quote_amount_spent
                             logging.info(f'{our_purchase_event}\nSELL SUCCESS!\nPROFIT {profit} quote mint - {ui_quote_name}\n balance - {quote_balance}')
-                            notify(platform = PLATFORM, chat_id = CHAT_ID, text=f"🔴 Sniper SELL\n\n🪙 Mint: {mint_address}\n💱 Quote mint: {ui_quote_name}\n💰 Profit: {profit:+.8f} {ui_quote_name}\n📊 Exit price: {our_purchase_event['price']}\n🏦 {ui_quote_name} balance: {quote_balance}")
+                            notify(platform = PLATFORM, chat_id = CHAT_ID, text=f"🔴 Sniper SELL\n\n🧾 Mint: {mint_address}\n💱 Quote mint: {ui_quote_name}\n💰 Profit: {profit:+.8f} {ui_quote_name}\n📊 Exit price: {our_purchase_event['price']}\n🏷️ Signature: {signature}\n🏦 {ui_quote_name} balance: {quote_balance}")
 
                         break
                 if our_purchase_event:
@@ -180,7 +181,7 @@ async def pumpapi_data_stream(ws_url, aiohttp_session, token_events):
 async def periodical_notifier():
     while True:
         try:
-            await asyncio.sleep(30)
+            await asyncio.sleep(60*30)
             if our_balances:
                 logging.info(f"Current balances: {our_balances}")
                 notify(platform = PLATFORM, chat_id = CHAT_ID, text=f"📡 Sniper heartbeat\n\nBot is live and scanning new pump.fun launches.\n🏦 Current balances: {our_balances}")
