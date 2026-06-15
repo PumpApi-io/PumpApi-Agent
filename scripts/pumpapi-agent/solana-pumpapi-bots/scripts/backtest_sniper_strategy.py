@@ -164,15 +164,16 @@ def finish(window):
         logging.info(m)
         out.append(m)
 
-    log("=" * 60)
-    log("BACKTEST RESULT")
-    log(window)
-    log(f"params: buy if dev_buy>{strategy_dict[WSOL]['buy_threshold']} SOL | size={strategy_dict[WSOL]['amount_to_buy']} SOL | TP={TP}% SL={SL}% idle={IDLE_MS//60000}min")
-    log(f"latency: buy={BUY_LATENCY_MS}ms sell={SELL_LATENCY_MS}ms | buy slippage cap={SLIPPAGE_BUY}%")
-    log(f"costs/side: pumpapi {PUMPAPI_FEE} + force-majeure {FORCE_MAJEURE} + pool poolFeeRate(per token)")
-    log(f"events: {stats['seen']:,} (skipped {stats['skipped']}) | pump creates: {stats['creates']:,} | bought: {stats['buys']} | missed(slippage): {stats['missed']}")
+    log("📊 PumpApi sniper backtest")
+    log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    log(f"🕒 {window}")
+    log(f"🎯 Entry: dev buy > {strategy_dict[WSOL]['buy_threshold']} SOL | Size: {strategy_dict[WSOL]['amount_to_buy']} SOL")
+    log(f"🛡️ Risk: TP {TP}% | SL {SL}% | Idle exit {IDLE_MS//60000} min")
+    log(f"⚡ Latency model: buy {BUY_LATENCY_MS}ms | sell {SELL_LATENCY_MS}ms | max buy slippage {SLIPPAGE_BUY}%")
+    log(f"💸 Costs/side: PumpApi {PUMPAPI_FEE} + force-majeure {FORCE_MAJEURE} + pool fee")
+    log(f"🌊 Events scanned: {stats['seen']:,} | Pump creates: {stats['creates']:,} | Buys: {stats['buys']} | Missed by slippage: {stats['missed']} | Skipped: {stats['skipped']}")
     if not trades:
-        log("no trades in this window")
+        log("🤷 No trades were opened in this replay window.")
         notify(platform=PLATFORM, chat_id=CHAT_ID, text="\n".join(out))
         return
 
@@ -187,17 +188,17 @@ def finish(window):
     pnl_wsol = sum(t['pnl'] for t in trades if t['quote_mint'] == WSOL)
     pnl_usdc = sum(t['pnl'] for t in trades if t['quote_mint'] == USDC)
 
-    log(f"trades closed: {n}  ({', '.join(f'{k}:{v}' for k, v in by.items())})")
-    log(f"win rate: {len(wins)/n*100:.1f}%  ({len(wins)} win / {n-len(wins)} loss)")
-    log(f"avg move: {sum(t['pct'] for t in trades)/n:+.1f}%  | avg entry slip from latency: {sum(t['buy_slip'] for t in trades)/n:+.1f}%")
-    log(f"PnL total: {pnl_sol:+.6f} SOL   (WSOL {pnl_wsol:+.6f} SOL, USDC {pnl_usdc:+.4f} USDC)")
-    log(f"volume bought: {vol_sol:.6f} SOL-eq | ROI on turnover: {(pnl_sol/vol_sol*100 if vol_sol else 0):+.1f}% | fees paid: {fee_sol:.6f} SOL | avg pnl/trade: {pnl_sol/n:+.6f} SOL")
+    log(f"✅ Trades closed: {n} ({', '.join(f'{k}: {v}' for k, v in by.items())})")
+    log(f"🏆 Win rate: {len(wins)/n*100:.1f}% ({len(wins)} win / {n-len(wins)} loss)")
+    log(f"📈 Avg move: {sum(t['pct'] for t in trades)/n:+.1f}% | Avg entry slip: {sum(t['buy_slip'] for t in trades)/n:+.1f}%")
+    log(f"💰 Total PnL: {pnl_sol:+.6f} SOL (WSOL {pnl_wsol:+.6f}, USDC {pnl_usdc:+.4f})")
+    log(f"🔁 Volume bought: {vol_sol:.6f} SOL-eq | ROI: {(pnl_sol/vol_sol*100 if vol_sol else 0):+.1f}% | Fees: {fee_sol:.6f} SOL | Avg/trade: {pnl_sol/n:+.6f} SOL")
 
     best = sorted(trades, key=lambda t: t['pnl_sol'], reverse=True)[:3]
     worst = sorted(trades, key=lambda t: t['pnl_sol'])[:3]
-    log("best:  " + " | ".join(f"{t['mint'][:6]} {t['pct']:+.0f}% {t['pnl_sol']:+.6f}SOL[{t['reason']}]" for t in best))
-    log("worst: " + " | ".join(f"{t['mint'][:6]} {t['pct']:+.0f}% {t['pnl_sol']:+.6f}SOL[{t['reason']}]" for t in worst))
-    log("=" * 60)
+    log("🚀 Best trades: " + " | ".join(f"{t['mint'][:6]} {t['pct']:+.0f}% {t['pnl_sol']:+.6f} SOL [{t['reason']}]" for t in best))
+    log("🥶 Worst trades: " + " | ".join(f"{t['mint'][:6]} {t['pct']:+.0f}% {t['pnl_sol']:+.6f} SOL [{t['reason']}]" for t in worst))
+    log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     notify(platform=PLATFORM, chat_id=CHAT_ID, text="\n".join(out))
 
 async def fetch(session, hour_dt):
