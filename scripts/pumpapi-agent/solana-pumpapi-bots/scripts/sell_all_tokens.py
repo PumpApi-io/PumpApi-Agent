@@ -40,7 +40,7 @@ def sell_everything(mint_address):
         response = requests.post(url, json=data).json()
         if response['confirmed']: # The confirmed field is only present in guaranteedDelivery mode (it waits 10 sec until succesful tx seen in network).  Drawback: it does not distinguish failed txs from unlanded txs. If a tx fails due to slippage, confirmed will be false.
             logging.info(f"mint {mint_address} sold successfully | quoteMint -> {response["trades"][0]['quoteMint']}")
-            notify(platform = PLATFORM, chat_id = CHAT_ID, text=f"mint {mint_address} sold successfully | quoteMint -> {response["trades"][0]['quoteMint']}")
+            notify(platform = PLATFORM, chat_id = CHAT_ID, text=f"✅ Token sold successfully\n\n🪙 Mint: {mint_address}\n💱 Quote mint received: {quote_mint}\n✨ Status: confirmed on-chain")
         else:
             if burn_after_unsuccesful_sell_allowed:
                 logging.info('not sold -> burn everything')
@@ -63,7 +63,8 @@ data = {
 response = requests.post(url, json=data).json()
 if not response['tokenBalances']:
     notify(platform = PLATFORM, chat_id = CHAT_ID, text=f"No tokens to sell")
+    notify(platform = PLATFORM, chat_id = CHAT_ID, text="🧹 No token balances found — nothing to sell.")
 else:
     for mint_address, mint_data in response['tokenBalances'].items():
         sell_everything(mint_address)
-    notify(platform = PLATFORM, chat_id = CHAT_ID, text=f"Token sale ended")
+    notify(platform = PLATFORM, chat_id = CHAT_ID, text=f"🧹 Token sale ended")
