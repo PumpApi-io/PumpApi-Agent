@@ -3,7 +3,7 @@ Send a message to a user, regardless of platform.
 
 Usage from any bot:
 
-    from notify import notify
+    from notify_user import notify
     notify("api_server", "0db44d63f25b499eb3d4f2a7338f29ae", "hello")
     notify("telegram",   "1001234567890",                   "hello")
     notify("discord",    "999888777",                        "hello", thread_id="555")
