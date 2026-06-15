@@ -47,6 +47,7 @@ EOF
 yes | sudo hermes gateway install --system --run-as-user root
 sudo systemctl enable --now hermes-gateway
 python3 /root/pumpapi-agent/scripts/update_hermes_soul_and_skills.py
+echo 'export PYTHONPATH=/root/.hermes/skills/pumpapi-agent/notify-user/scripts:$PYTHONPATH' | sudo tee /etc/profile.d/hermes_pythonpath.sh
 export PYTHONPATH=/root/.hermes/skills/pumpapi-agent/notify-user/scripts:$PYTHONPATH
 sudo tee /etc/systemd/system/pumpapi-agent.service > /dev/null <<'EOF'
 [Unit]
