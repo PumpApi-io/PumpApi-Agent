@@ -468,8 +468,8 @@ const App = {
       if (newModel === prev) return;
       if (newModelOrEvent && newModelOrEvent.target) newModelOrEvent.target.value = prev; // keep dropdown on old value until user confirms
       const warn = streaming.value
-        ? `Switching the model will restart the agent and abort the response that's currently being generated. The new model also applies to every linked messenger (Telegram / Discord / WhatsApp). Continue?`
-        : `Switching the model will briefly restart the agent (a few seconds) and apply to every linked messenger (Telegram / Discord / WhatsApp). Continue?`;
+        ? `Switching the model will restart the agent, stop all running bots, and abort the response that's currently being generated. The new model will also apply to every linked messenger (Telegram / Discord / WhatsApp). Continue?`
+        : `Switching the model will briefly restart the agent (a few seconds), stop all running bots, and apply the new model to every linked messenger (Telegram / Discord / WhatsApp). Continue?`;
       confirm.value = {
         message: warn,
         confirmLabel: 'Switch',
