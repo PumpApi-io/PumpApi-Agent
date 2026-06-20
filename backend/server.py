@@ -31,6 +31,7 @@ HERMES_HOME = Path(os.path.expanduser("~/.hermes"))
 HERMES_ENV = HERMES_HOME / ".env"
 HERMES_MEM_DIR = HERMES_HOME / "memories"
 HERMES_SKILLS_DIR = HERMES_HOME / "skills"
+AGENT_ENV = Path("/etc/environment")
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
@@ -745,6 +746,93 @@ async def api_get_settings(request: web.Request) -> web.Response:
     env = _parse_env(HERMES_ENV)
     out = {k: env.get(k, "") for k in ALLOWED_SETTING_KEYS}
     return web.json_response(out)
+
+
+def _env_quote(v: str) -> str:
+    return '"' + v.replace('\\', '\\\\').replace('"', '\"') + '"'
+
+
+def _write_env_values(path: Path, updates: dict[str, str]) -> None:
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    seen: set[str] = set()
+    new_lines: list[str] = []
+    for raw in lines:
+        m = re.match(r"^(\s*(?:export\s+)?)([A-Z0-9_]+)(\s*=).*", raw)
+        if m and m.group(2) in updates:
+            key = m.group(2)
+            seen.add(key)
+            new_lines.append(f"{m.group(1)}{key}={_env_quote(updates[key])}")
+        else:
+            new_lines.append(raw)
+    for k, v in updates.items():
+        if k not in seen:
+            new_lines.append(f"{k}={_env_quote(v)}")
+    path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+
+
+async def api_get_agent_wallet(request: web.Request) -> web.Response:
+    env = _parse_env(AGENT_ENV)
+    return web.json_response({
+        "public_key": env.get("AGENT_SOLANA_BASE58_PUBLIC_KEY", ""),
+        "private_key": env.get("AGENT_SOLANA_BASE58_PRIVATE_KEY", ""),
+    })
+
+
+def _derive_agent_wallet_public_key(private_key: str) -> str:
+    from solders.keypair import Keypair
+    return str(Keypair.from_base58_string(private_key).pubkey())
+
+
+async def api_derive_agent_wallet(request: web.Request) -> web.Response:
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid_json"}, status=400)
+    private_key = str((body or {}).get("private_key") or "").strip()
+    if not private_key:
+        return web.json_response({"error": "missing_private_key"}, status=400)
+    try:
+        return web.json_response({"public_key": _derive_agent_wallet_public_key(private_key)})
+    except Exception as e:
+        return web.json_response({"error": "bad_private_key", "detail": str(e)[:200]}, status=400)
+
+
+async def api_post_agent_wallet(request: web.Request) -> web.Response:
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid_json"}, status=400)
+    private_key = str((body or {}).get("private_key") or "").strip()
+    if not private_key:
+        return web.json_response({"error": "missing_private_key"}, status=400)
+    try:
+        public_key = _derive_agent_wallet_public_key(private_key)
+    except Exception as e:
+        return web.json_response({"error": "bad_private_key", "detail": str(e)[:200]}, status=400)
+
+    updates = {
+        "AGENT_SOLANA_BASE58_PUBLIC_KEY": public_key,
+        "AGENT_SOLANA_BASE58_PRIVATE_KEY": private_key,
+    }
+    try:
+        _write_env_values(AGENT_ENV, updates)
+        os.environ.update(updates)
+        for k, v in updates.items():
+            # Persist for future shells as requested; the current process also gets os.environ above.
+            await _run("bash", "-lc", f"export {k}=\"{v}\"")
+    except Exception as e:
+        return web.json_response({"error": "env_write_failed", "detail": str(e)[:200]}, status=500)
+
+    # Restart this web service after the response is sent. Restarting it inline
+    # would kill the HTTP handler before the browser receives the JSON result.
+    ok, msg = await _run(
+        "systemd-run", "--unit=pumpapi-agent-restart", "--on-active=1s",
+        "/bin/systemctl", "restart", "pumpapi-agent.service",
+        timeout=10,
+    )
+    if not ok:
+        return web.json_response({"error": "restart_failed", "detail": msg, "public_key": public_key}, status=500)
+    return web.json_response({"ok": True, "public_key": public_key, "restarted": ["pumpapi-agent.service"]})
 
 
 # ---------------------------------------------------------------------------
@@ -1766,6 +1854,9 @@ def create_app() -> web.Application:
     # Settings
     app.router.add_get("/api/settings", require_auth(api_get_settings))
     app.router.add_post("/api/settings", require_auth(api_post_settings))
+    app.router.add_get("/api/agent-wallet", require_auth(api_get_agent_wallet))
+    app.router.add_post("/api/agent-wallet", require_auth(api_post_agent_wallet))
+    app.router.add_post("/api/agent-wallet/derive", require_auth(api_derive_agent_wallet))
 
     # Memory (agent's saved facts about user & environment)
     app.router.add_get("/api/memory/{target}", require_auth(api_get_memory))
