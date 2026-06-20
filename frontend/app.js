@@ -252,9 +252,12 @@ const App = {
     });
     const apiKey = ref('');
     const apiKeyVisible = ref(false);
+    const agentWallet = reactive({ public_key: '', private_key: '', draft_private_key: '', editing: false, saving: false });
+    const walletPublicVisible = ref(false);
+    const walletPrivateVisible = ref(false);
 
     // ---- Settings hub state ----
-    // panel: null = hub view; 'telegram'|'discord'|'whatsapp'|'memory'|'skills'|'tools'|'mcp' = sub-modal
+    // panel: null = hub view; 'telegram'|'discord'|'whatsapp'|'memory'|'skills'|'tools'|'mcp'|'wallet' = sub-modal
     const panel = ref(null);
     // Memory editor: {target:'MEMORY'|'USER', content, dirty}
     const memEditor = ref(null);
@@ -1340,6 +1343,68 @@ const App = {
       whatsapp: !!(settings.WHATSAPP_ACCOUNT_SID && settings.WHATSAPP_AUTH_TOKEN),
     }));
 
+    // ---- Agent wallet ----
+    async function openAgentWallet() {
+      try {
+        const r = await api('/api/agent-wallet');
+        agentWallet.public_key = r.public_key || '';
+        agentWallet.private_key = r.private_key || '';
+        agentWallet.draft_private_key = agentWallet.private_key;
+        agentWallet.editing = false;
+        walletPublicVisible.value = false;
+        walletPrivateVisible.value = false;
+        panel.value = 'wallet';
+      } catch (e) {
+        toast(`Failed to load wallet: ${e.message || e}`, 'error');
+      }
+    }
+    function editAgentWallet() {
+      agentWallet.draft_private_key = agentWallet.private_key;
+      agentWallet.editing = true;
+      walletPrivateVisible.value = true;
+    }
+    async function saveAgentWallet() {
+      if (agentWallet.saving) return;
+      let futurePublicKey = '';
+      try {
+        const r = await api('/api/agent-wallet/derive', { method: 'POST', body: JSON.stringify({ private_key: agentWallet.draft_private_key }) });
+        futurePublicKey = r.public_key || '';
+      } catch (e) {
+        toast(`Invalid private key: ${e.message || e}`, 'error');
+        return;
+      }
+      confirm.value = {
+        message: `If you have not saved the current private key, the money in that wallet will be lost forever.
+
+Future public key:
+${futurePublicKey}
+
+Continue changing the agent wallet?`,
+        confirmLabel: 'Change wallet',
+        danger: true,
+        onYes: async () => {
+          confirm.value = null;
+          agentWallet.saving = true;
+          try {
+            const r = await api('/api/agent-wallet', { method: 'POST', body: JSON.stringify({ private_key: agentWallet.draft_private_key }) });
+            agentWallet.private_key = agentWallet.draft_private_key;
+            agentWallet.public_key = r.public_key || '';
+            agentWallet.editing = false;
+            walletPrivateVisible.value = false;
+            toast('Agent wallet saved · service restarted');
+          } catch (e) {
+            toast(`Save failed: ${e.message || e}`, 'error');
+          } finally {
+            agentWallet.saving = false;
+          }
+        },
+      };
+    }
+    function cancelAgentWalletEdit() {
+      agentWallet.draft_private_key = agentWallet.private_key;
+      agentWallet.editing = false;
+    }
+
     // ---- Memory editor ----
     async function openMemory(target) {
       try {
@@ -1553,9 +1618,9 @@ const App = {
     }
 
     // ---- Render helpers ----
-    function maskedKey(k) {
+    function maskedKey(k, visible = apiKeyVisible.value) {
       if (!k) return '';
-      return apiKeyVisible.value ? k : '•'.repeat(Math.max(8, k.length));
+      return visible ? k : '•'.repeat(Math.max(8, k.length));
     }
 
     async function onDrop(e) {
@@ -1570,9 +1635,9 @@ const App = {
       soundEnabled, toggleSound,
       popoverChatId, renamingChatId, renameValue,
       editingMessageId, editingValue,
-      settings, apiKey, apiKeyVisible,
+      settings, apiKey, apiKeyVisible, agentWallet, walletPublicVisible, walletPrivateVisible,
       // settings hub
-      panel, messengerStatus,
+      panel, messengerStatus, openAgentWallet, editAgentWallet, saveAgentWallet, cancelAgentWalletEdit,
       memEditor, openMemory, saveMemory,
       skillsList, skillsLoading, skillImporter, skillPreview,
       openSkills, viewSkill, saveSkillEdit, closeSkillPreview, startSkillImport, closeSkillImport, submitSkillImport, deleteSkill,
@@ -1943,6 +2008,13 @@ const App = {
                 <span class="tile-sub">Built-in toolsets (web, browser, terminal…)</span>
               </span>
             </button>
+            <button class="settings-tile" @click="openAgentWallet">
+              <span class="tile-icon">💵</span>
+              <span class="tile-body">
+                <span class="tile-title">Agent Wallet</span>
+                <span class="tile-sub">Agent Solana wallet</span>
+              </span>
+            </button>
             <button class="settings-tile" @click="openMcp">
               <span class="tile-icon">🔗</span>
               <span class="tile-body">
@@ -2066,6 +2138,37 @@ const App = {
           <div class="modal-actions">
             <button @click="panel = null">Cancel</button>
             <button class="primary" @click="saveSection('WhatsApp')">Save and link</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Agent wallet sub-modal -->
+      <div v-if="settingsOpen && panel === 'wallet'" class="modal-backdrop" @click="panel = null">
+        <div class="modal" @click.stop>
+          <h2>💵 Agent Wallet</h2>
+          <p class="settings-hint">This is the agent's own Solana wallet. The agent will use it for trading, online purchases, and other actions that require wallet funds.</p>
+          <div class="field">
+            <label>Public key</label>
+            <div class="api-key-row">
+              <input type="text" :value="maskedKey(agentWallet.public_key, walletPublicVisible)" readonly />
+              <button @click="walletPublicVisible = !walletPublicVisible">{{ walletPublicVisible ? '🙈' : '👁' }}</button>
+            </div>
+          </div>
+          <div class="field">
+            <label>Private key</label>
+            <div class="api-key-row">
+              <input :type="walletPrivateVisible ? 'text' : 'password'" v-model="agentWallet.draft_private_key" :readonly="!agentWallet.editing" autocomplete="off" spellcheck="false" />
+              <button v-if="!agentWallet.editing" @click="walletPrivateVisible = !walletPrivateVisible">{{ walletPrivateVisible ? '🙈' : '👁' }}</button>
+              <button v-if="!agentWallet.editing" class="icon" @click="editAgentWallet" title="Edit" aria-label="Edit private key">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16">
+                  <path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/>
+                </svg>
+              </button>
+              <button v-else class="icon" @click="saveAgentWallet" :disabled="agentWallet.saving || !agentWallet.draft_private_key.trim()" title="Confirm change" aria-label="Confirm wallet change">✓</button>
+            </div>
+          </div>
+          <div class="modal-actions">
+            <button @click="agentWallet.editing ? cancelAgentWalletEdit() : (panel = null)" :disabled="agentWallet.saving">{{ agentWallet.editing ? 'Cancel' : 'Close' }}</button>
           </div>
         </div>
       </div>
