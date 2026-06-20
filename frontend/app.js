@@ -1787,7 +1787,7 @@ const App = {
         <!-- Floating "Reply" button shown above any text selection in the chat area -->
         <button v-if="replyBtn.visible" class="reply-floating"
                 :style="{ left: replyBtn.x + 'px', top: replyBtn.y + 'px' }"
-                @pointerdown.prevent @click="replyToSelection">↩ Reply</button>
+                @pointerdown.prevent="replyToSelection">↩ Reply</button>
 
         <!-- Input bar -->
         <div class="input-bar-wrap">
