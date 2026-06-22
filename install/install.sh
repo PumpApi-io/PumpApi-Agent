@@ -125,3 +125,4 @@ EOF
 sudo systemctl restart caddy
 sudo apt install screen -y
 /root/pumpapi-agent/venv/bin/pip install -r /root/pumpapi-agent/install/hermes_pip_requirements.txt
+hermes tools disable clarify
