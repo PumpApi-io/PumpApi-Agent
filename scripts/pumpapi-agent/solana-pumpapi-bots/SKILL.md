@@ -53,6 +53,12 @@ Fully async: use asyncio, aiohttp, websockets, orjson. No classes — write it l
 
 Match the style of the example scripts in this skill's `scripts/` folder.
 
+Trust the docs. They match the real API. Don't write fallback logic for missing fields — you log errors anyway, so if something breaks you'll see it in the logs. Use .get() only where the docs say a field is optional.
+
+Private key: assign it straight to a variable and use it. Don't wrap it in extra checks.
+
+Keep it simple. Minimal code, no duplication. Always ask yourself: "Can this be simpler?"
+
 ## Running bots
 
 Run background scripts with `/usr/local/lib/hermes-agent/venv/bin/python3` — THIS IS CRITICAL. Without this interpreter you can't push events to the user's platform.
