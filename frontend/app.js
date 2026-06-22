@@ -817,8 +817,17 @@ const App = {
       }
     }
 
+    async function uploadFile(file) {
+      const fd = new FormData();
+      fd.append('file', file, file.name || 'upload.bin');
+      const r = await fetch('/api/upload', { method: 'POST', body: fd });
+      if (!r.ok) throw new Error('upload_failed');
+      return r.json();
+    }
+
     async function attachFile(file) {
       if (file.type.startsWith('image/')) {
+        // Image → inline data URI so the model can see it (vision).
         const dataUri = await fileToDataURL(file);
         draftAttachments.value.push({
           kind: 'image',
@@ -827,7 +836,8 @@ const App = {
           size: file.size,
           mime: file.type,
         });
-      } else {
+      } else if (file.type.startsWith('text/') || attIsTextPreviewable(file.name)) {
+        // Genuinely textual → inline the content directly.
         const text = await file.text();
         draftAttachments.value.push({
           kind: 'text',
@@ -835,13 +845,24 @@ const App = {
           text,
           size: text.length,
         });
+      } else {
+        // Any other file (pdf, docx, audio, binary, …) → upload the raw bytes
+        // to disk and hand the agent the path so it can open it with its tools.
+        const info = await uploadFile(file);
+        draftAttachments.value.push({
+          kind: 'file',
+          filename: file.name || info.filename,
+          path: info.path,
+          url: info.url,
+          mime: info.mime,
+          size: info.size,
+        });
       }
     }
 
     function pickFile() {
       const inp = document.createElement('input');
       inp.type = 'file';
-      inp.accept = 'image/*,text/*,.md,.json,.csv,.log,.py,.js,.ts';
       inp.onchange = async () => {
         for (const f of inp.files) await attachFile(f);
       };
@@ -917,6 +938,8 @@ const App = {
       const attachments = draftAttachments.value.map((a) => {
         if (a.kind === 'image') {
           return { type: 'image', filename: a.filename, data_uri: a.dataUri, size: a.size };
+        } else if (a.kind === 'file') {
+          return { type: 'file', filename: a.filename, path: a.path, url: a.url, mime: a.mime, size: a.size };
         } else {
           return { type: 'text', filename: a.filename, preview: a.text, size: a.size };
         }
@@ -1776,7 +1799,7 @@ Continue changing the agent wallet?`,
                       <img :src="a.data_uri" />
                       <button class="att-x" @click.stop="removeEditAttachment(m, i)">✕</button>
                     </div>
-                    <div v-else-if="a.type === 'text'" class="att-card" @click="openTextPreview(a, 'preview', true)">
+                    <div v-else-if="a.type === 'text' || a.type === 'file'" class="att-card" @click="a.type === 'text' && openTextPreview(a, 'preview', true)">
                       <div v-if="attIsTextPreviewable(a.filename)" class="att-preview">{{ (a.preview || '').slice(0, 80) }}</div>
                       <div v-else class="att-name">{{ truncFilename(a.filename) }}</div>
                       <div class="att-meta">
@@ -1812,7 +1835,7 @@ Continue changing the agent wallet?`,
               <div v-if="editingMessageId !== m.id && m.attachments && m.attachments.length" class="msg-attachments">
                 <template v-for="(a, i) in m.attachments" :key="i">
                   <img v-if="a.type === 'image' && a.data_uri" class="thumb-img" :src="a.data_uri" @click="lightboxUrl = a.data_uri" />
-                  <div v-else-if="a.type === 'text'" class="att-card" @click="openTextPreview(a, 'preview', false)">
+                  <div v-else-if="a.type === 'text' || a.type === 'file'" class="att-card" @click="a.type === 'text' && openTextPreview(a, 'preview', false)">
                     <div v-if="attIsTextPreviewable(a.filename)" class="att-preview">{{ (a.preview || '').slice(0, 80) }}</div>
                     <div v-else class="att-name">{{ truncFilename(a.filename) }}</div>
                     <div class="att-meta">
@@ -1870,7 +1893,7 @@ Continue changing the agent wallet?`,
                   <img :src="a.dataUri" />
                   <button class="att-x" @click.stop="removeAttachment(i)">✕</button>
                 </div>
-                <div v-else class="att-card" @click="openTextPreview(a, 'text', true)">
+                <div v-else class="att-card" @click="a.kind === 'text' && openTextPreview(a, 'text', true)">
                   <div v-if="attIsTextPreviewable(a.filename)" class="att-preview">{{ (a.text || '').slice(0, 80) }}</div>
                   <div v-else class="att-name">{{ truncFilename(a.filename) }}</div>
                   <div class="att-meta">
