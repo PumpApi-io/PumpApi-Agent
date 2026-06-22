@@ -128,7 +128,7 @@ sudo apt install screen -y
 hermes tools disable clarify
 curl -fsSL https://claude.ai/install.sh | bash
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
-sudo tee /etc/systemd/system/pumpapi-agent.service > /dev/null <<'EOF'
+sudo tee root/.claude/settings.json > /dev/null <<'EOF'
 {
   "model": "Claude-Medium",
   "env": {
