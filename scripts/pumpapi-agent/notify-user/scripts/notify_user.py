@@ -22,6 +22,7 @@ import time
 import urllib.error
 import urllib.request
 from typing import Optional
+import asyncio
 
 HERMES_LIB = "/usr/local/lib/hermes-agent"
 APP_DB = "/root/pumpapi-agent/data/app.db"
@@ -100,7 +101,7 @@ def _ping_sse(chat_id: str) -> None:
         pass
 
 
-def notify(
+def notify_blocking(
     platform: str,
     chat_id: str,
     text: str,
@@ -117,3 +118,12 @@ def notify(
     message = text + (f"\nMEDIA:{image}" if image else "")
     raw = send_message_tool({"action": "send", "target": target, "message": message})
     return json.loads(raw) if isinstance(raw, str) else raw
+
+def notify(platform, chat_id, text, thread_id=None, image=None):
+    args = (platform, chat_id, text, thread_id, image)
+    try:
+        asyncio.create_task(asyncio.to_thread(notify_blocking, *args))
+    except RuntimeError:
+        threading.Thread(target=notify_blocking, args=args, daemon=True).start()
+
+    
