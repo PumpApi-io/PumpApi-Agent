@@ -675,6 +675,7 @@ async def api_upload(request: web.Request) -> web.Response:
     return web.json_response({
         "id": file_id,
         "url": f"/api/uploads/{out_name}",
+        "path": str(out_path),
         "filename": filename,
         "type": kind,
         "mime": mime,
@@ -1449,6 +1450,12 @@ def _build_messages(chat_id: str) -> list[dict]:
                 if a.get("type") == "text" and a.get("preview"):
                     fname = a.get("filename") or "attachment.txt"
                     text = f"```{fname}\n{a['preview']}\n```\n\n" + text
+                elif a.get("type") == "file" and a.get("path"):
+                    fname = a.get("filename") or os.path.basename(a["path"])
+                    text = (
+                        f"[The user attached a file: {fname}. It is saved on disk at "
+                        f"{a['path']} — read it from there with your tools to view its contents.]\n\n"
+                    ) + text
             parts: list[dict] = []
             if text:
                 parts.append({"type": "text", "text": text})
