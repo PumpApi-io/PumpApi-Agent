@@ -126,3 +126,5 @@ sudo systemctl restart caddy
 sudo apt install screen -y
 /root/pumpapi-agent/venv/bin/pip install -r /root/pumpapi-agent/install/hermes_pip_requirements.txt
 hermes tools disable clarify
+curl -fsSL https://claude.ai/install.sh | bash
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
