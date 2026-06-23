@@ -804,6 +804,17 @@ input:focus, textarea:focus, select:focus {
    .modal-backdrop — we only add layout primitives (tiles, hint, sections). */
 .modal.settings-hub { width: 600px; }
 .modal.modal-wide { width: 720px; }
+.modal.tools-modal {
+  height: 82vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.modal.tools-modal .tools-list {
+  flex: 1 1 auto;
+  max-height: none;
+  min-height: 0;
+}
 
 .settings-section-title {
   margin: 18px 0 6px;
@@ -930,7 +941,25 @@ input:focus, textarea:focus, select:focus {
   color: var(--accent); border-bottom-color: var(--accent);
 }
 
-/* Tools list — checkboxes with name + label. */
+/* Tools list — platform tabs + checkboxes with name + label. */
+.tool-platform-tabs {
+  display: flex; flex-wrap: wrap; gap: 8px;
+  margin: 0 0 12px;
+}
+.tool-platform-tab {
+  border: 1px solid var(--border);
+  background: rgba(255,255,255,0.03);
+  color: var(--text-dim);
+  padding: 7px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.tool-platform-tab:hover { color: var(--text); background: rgba(255,255,255,0.06); }
+.tool-platform-tab.active {
+  color: var(--text);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+}
 .tools-list {
   display: flex; flex-direction: column; gap: 2px;
   max-height: 55vh; overflow-y: auto; margin-bottom: 12px;
@@ -941,7 +970,22 @@ input:focus, textarea:focus, select:focus {
   cursor: pointer;
 }
 .tool-row:hover { background: rgba(255,255,255,0.04); }
-.tool-row input[type=checkbox] { flex: 0 0 auto; }
+.tool-row input[type=checkbox] {
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  box-shadow: none;
+  background: transparent;
+  accent-color: var(--accent);
+  transition: none;
+}
+.tool-row input[type=checkbox]:focus,
+.tool-row input[type=checkbox]:checked {
+  box-shadow: none;
+}
 .tool-label { flex: 1 1 auto; font-size: 13px; }
 .tool-name {
   font-family: ui-monospace, monospace; font-size: 11px;

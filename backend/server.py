@@ -1289,10 +1289,28 @@ _RE_TOOL_LINE = re.compile(
     r"^\s*(?P<state>✓\s*enabled|✗\s*disabled)\s+(?P<name>\S+)\s+(?P<label>.+?)\s*$"
 )
 
+_TOOL_PLATFORMS = {
+    "api_server": "Website",
+    "telegram": "Telegram",
+    "discord": "Discord",
+    "whatsapp": "WhatsApp",
+}
+_DEFAULT_TOOL_PLATFORM = "api_server"
+
+
+def _tool_platform(value: object) -> Optional[str]:
+    platform = str(value or _DEFAULT_TOOL_PLATFORM).strip().lower()
+    if platform not in _TOOL_PLATFORMS:
+        return None
+    return platform
+
 
 async def api_list_tools(request: web.Request) -> web.Response:
-    """Parse `hermes tools list` output. Each tool: {name, label, enabled}."""
-    ok, out = await _run("hermes", "tools", "list", timeout=20, max_output=20000)
+    """Parse `hermes tools list --platform <platform>` output."""
+    platform = _tool_platform(request.query.get("platform"))
+    if not platform:
+        return web.json_response({"error": "bad_platform", "allowed": list(_TOOL_PLATFORMS)}, status=400)
+    ok, out = await _run("hermes", "tools", "list", "--platform", platform, timeout=20, max_output=20000)
     if not ok:
         return web.json_response({"error": "list_failed", "detail": out}, status=500)
     items: list[dict] = []
@@ -1305,7 +1323,12 @@ async def api_list_tools(request: web.Request) -> web.Response:
             "label": m.group("label").strip(),
             "enabled": "enabled" in m.group("state"),
         })
-    return web.json_response({"items": items})
+    return web.json_response({
+        "items": items,
+        "platform": platform,
+        "platform_label": _TOOL_PLATFORMS[platform],
+        "platforms": [{"key": k, "label": v} for k, v in _TOOL_PLATFORMS.items()],
+    })
 
 
 async def _restart_gateway() -> tuple[bool, str]:
@@ -1323,22 +1346,21 @@ async def api_toggle_tool(request: web.Request) -> web.Response:
         return web.json_response({"error": "invalid_json"}, status=400)
     name = (body.get("name") or "").strip()
     enable = bool(body.get("enable"))
+    platform = _tool_platform(body.get("platform"))
+    if not platform:
+        return web.json_response({"error": "bad_platform", "allowed": list(_TOOL_PLATFORMS)}, status=400)
     # Tool names are lowercase letters/digits/underscore (e.g. web, image_gen, computer_use)
     if not re.fullmatch(r"[a-zA-Z0-9_:.-]{1,64}", name):
         return web.json_response({"error": "bad_name"}, status=400)
     action = "enable" if enable else "disable"
-    ok, msg = await _run("hermes", "tools", action, name, timeout=20)
+    ok, msg = await _run("hermes", "tools", action, "--platform", platform, name, timeout=20)
     if not ok:
         return web.json_response({"error": "toggle_failed", "detail": msg}, status=500)
-    # Gateway restart required — the running api_server caches enabled toolsets
-    # at startup; without restart the change persists in config but the agent
-    # keeps using the old set.
-    ok2, msg2 = await _restart_gateway()
     return web.json_response({
         "ok": True,
         "output": msg[-500:],
-        "restarted": ok2,
-        "restart_error": None if ok2 else msg2[-200:],
+        "platform": platform,
+        "restart_required": False,
     })
 
 

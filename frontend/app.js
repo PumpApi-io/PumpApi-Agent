@@ -267,6 +267,13 @@ const App = {
     const skillImporter = ref(null); // {source, name, content, url, busy}
     const skillPreview = ref(null);   // {name, content}
     // Tools (built-in toolsets)
+    const toolPlatforms = [
+      { key: 'api_server', label: 'Website' },
+      { key: 'telegram', label: 'Telegram' },
+      { key: 'discord', label: 'Discord' },
+      { key: 'whatsapp', label: 'WhatsApp' },
+    ];
+    const selectedToolPlatform = ref('api_server');
     const toolsList = ref([]);
     const toolsLoading = ref(false);
     // MCP servers
@@ -1565,11 +1572,11 @@ Continue changing the agent wallet?`,
     }
 
     // ---- Tools ----
-    async function openTools() {
-      panel.value = 'tools';
+    async function loadTools() {
       toolsLoading.value = true;
       try {
-        const r = await api('/api/tools');
+        const platform = encodeURIComponent(selectedToolPlatform.value || 'api_server');
+        const r = await api(`/api/tools?platform=${platform}`);
         toolsList.value = r.items || [];
       } catch (e) {
         toast(`Failed to load tools: ${e.message || e}`, 'error');
@@ -1577,12 +1584,25 @@ Continue changing the agent wallet?`,
         toolsLoading.value = false;
       }
     }
+    async function openTools() {
+      panel.value = 'tools';
+      if (!selectedToolPlatform.value) selectedToolPlatform.value = 'api_server';
+      await loadTools();
+    }
+    async function selectToolPlatform(platform) {
+      if (selectedToolPlatform.value === platform) return;
+      selectedToolPlatform.value = platform;
+      await loadTools();
+    }
     async function toggleTool(t) {
       const target = !t.enabled;
       // Optimistic update — revert on failure
       t.enabled = target;
       try {
-        await api('/api/tools/toggle', { method: 'POST', body: JSON.stringify({ name: t.name, enable: target }) });
+        await api('/api/tools/toggle', {
+          method: 'POST',
+          body: JSON.stringify({ name: t.name, enable: target, platform: selectedToolPlatform.value || 'api_server' }),
+        });
       } catch (e) {
         t.enabled = !target;
         toast(`Failed: ${e.message || e}`, 'error');
@@ -1664,7 +1684,7 @@ Continue changing the agent wallet?`,
       memEditor, openMemory, saveMemory,
       skillsList, skillsLoading, skillImporter, skillPreview,
       openSkills, viewSkill, saveSkillEdit, closeSkillPreview, startSkillImport, closeSkillImport, submitSkillImport, deleteSkill,
-      toolsList, toolsLoading, openTools, toggleTool,
+      toolPlatforms, selectedToolPlatform, toolsList, toolsLoading, openTools, selectToolPlatform, toggleTool,
       mcpList, mcpEmpty, mcpForm, openMcp, startMcpAdd, submitMcpAdd, removeMcp,
       updateState, checkForUpdate, applyUpdate,
       liveAssistant,
@@ -2282,12 +2302,24 @@ Continue changing the agent wallet?`,
 
       <!-- Tools sub-modal -->
       <div v-if="settingsOpen && panel === 'tools'" class="modal-backdrop" @click="panel = null">
-        <div class="modal modal-wide" @click.stop>
+        <div class="modal modal-wide tools-modal" @click.stop>
           <h2>🛠️ Tools</h2>
-          <p class="settings-hint">Toggle built-in toolsets. The agent restarts briefly after each change so the new set takes effect.</p>
+          <p class="settings-hint">Toggle built-in toolsets for a specific platform. Changes apply to new agent runs/sessions.</p>
+          <div class="tool-platform-tabs" role="tablist" aria-label="Tool platform">
+            <button v-for="p in toolPlatforms"
+                    :key="p.key"
+                    class="tool-platform-tab"
+                    :class="{ active: selectedToolPlatform === p.key }"
+                    role="tab"
+                    :aria-selected="selectedToolPlatform === p.key"
+                    @click="selectToolPlatform(p.key)">
+              {{ p.label }}
+            </button>
+          </div>
+          <p class="settings-hint">Showing: <strong>{{ toolPlatforms.find(p => p.key === selectedToolPlatform)?.label || 'Website' }}</strong></p>
           <div v-if="toolsLoading" class="settings-hint">Loading…</div>
           <div v-else class="tools-list">
-            <label v-for="t in toolsList" :key="t.name" class="tool-row">
+            <label v-for="t in toolsList" :key="selectedToolPlatform + ':' + t.name" class="tool-row">
               <input type="checkbox" :checked="t.enabled" @change="toggleTool(t)" />
               <span class="tool-label">{{ t.label }}</span>
               <span class="tool-name">{{ t.name }}</span>
