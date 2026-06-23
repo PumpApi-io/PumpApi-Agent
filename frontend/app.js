@@ -1050,7 +1050,7 @@ const App = {
         if (!gotContent && !errorBanner.value) {
           showError(
             'No response from agent',
-            'Please check your LLM Balance in your personal account at pumpapi.ai',
+            'The model may be overloaded. Please try switching to a different AI model.',
           );
         }
         // Reply finished while the user is on another tab/window → ding.
