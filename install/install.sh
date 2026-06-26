@@ -37,6 +37,7 @@ hermes config set providers.pumpapi.name PumpApi
 hermes config set providers.pumpapi.base_url https://api.pumpapi.ai/v1
 hermes config set providers.pumpapi.api_key $PUMPAPI_API_KEY
 hermes config set providers.pumpapi.discover_models true
+hermes config set prompt_caching.cache_ttl 1h
 sudo tee /root/.hermes/.env > /dev/null <<EOF
 API_SERVER_ENABLED=true
 API_SERVER_HOST=127.0.0.1
