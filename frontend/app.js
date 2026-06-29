@@ -65,15 +65,37 @@ function mediaToHtml(absPath) {
   return `<a class="att-pill" href="${url}" target="_blank" rel="noopener">📎 ${escapeHtml(filename)}</a>`;
 }
 
-function renderMarkdown(text) {
-  if (!text) return '';
+// Memoize rendered markdown keyed by the raw text. This is the hot path:
+// renderMarkdown(m.content) is called inside the message v-for, so Vue re-runs
+// it for EVERY message on every re-render of the component — including the
+// re-render triggered by `draft` changing on each keystroke in the composer.
+// marked.parse + hljs highlighting is expensive, so in a long chat that made
+// typing laggy. Since a saved message's content doesn't change, caching the
+// HTML by content makes keystroke re-renders essentially free. The streaming
+// message changes every chunk, so it just misses the cache (same as before).
+const _mdCache = new Map();
+const _MD_CACHE_MAX = 400;
+function _renderMarkdownUncached(text) {
   let html;
   try { html = marked.parse(text); } catch (e) { html = escapeHtml(text); }
   // Post-process: replace MEDIA:/abs/path tokens with an inline image or link.
   // Run on the rendered HTML so paths that ended up wrapped in <p>/<code>/etc.
   // still get matched. We deliberately skip matches inside href="..." and
   // src="..." attributes by requiring the token not to be preceded by `="` or `='`.
+
   return html.replace(/(?<!["'=])MEDIA:(\/[^\s<>"']+)/g, (_m, p) => mediaToHtml(p));
+}
+function renderMarkdown(text) {
+  if (!text) return '';
+  const hit = _mdCache.get(text);
+  if (hit !== undefined) return hit;
+  const html = _renderMarkdownUncached(text);
+  // Bound the cache: drop the oldest entry when full (Map preserves insertion order).
+  if (_mdCache.size >= _MD_CACHE_MAX) {
+    _mdCache.delete(_mdCache.keys().next().value);
+  }
+  _mdCache.set(text, html);
+  return html;
 }
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
