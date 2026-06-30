@@ -1,5 +1,5 @@
 // PumpApi Agent - Vue 3 SPA
-import { createApp, ref, reactive, computed, onMounted, nextTick, watch, h } from 'vue';
+import { createApp, ref, reactive, computed, onMounted, nextTick, watch, h, provide, inject } from 'vue';
 import { marked } from 'marked';
 import hljs from 'highlight.js';
 
@@ -133,7 +133,109 @@ function fileToDataURL(file) {
 const TOOL_EMOJI_DEFAULT = '🔧';
 
 // ---- Main App ----
+// MessageList: renders the chat transcript in its own component so that
+// composer keystrokes (which mutate `draft` on the parent) don't trigger a
+// re-render/diff of every message bubble. This child only re-renders when its
+// props change (messages array, the live streaming assistant, or streaming
+// flag), or when an injected reactive value it actually uses changes (e.g.
+// editingValue while editing a message). All handlers/helpers come from the
+// parent via the injected `msgCtx`. The template here is the exact markup that
+// previously lived inline in the App template.
+const MessageList = {
+  props: ['messages', 'liveAssistant', 'streaming'],
+  setup() {
+    const ctx = inject('msgCtx');
+    // Expose every helper/ref from the parent to this template by spreading the
+    // injected context. Refs stay reactive and unref automatically in template.
+    return { ...ctx };
+  },
+  template: `
+    <div class="msg-list">
+      <div v-for="m in messages" :key="m.id" class="msg-row" :class="m.role">
+        <div v-if="editingMessageId === m.id" class="msg-edit bubble">
+          <textarea v-model="editingValue"></textarea>
+          <div v-if="editingAttachments.length" class="msg-attachments">
+            <template v-for="(a, i) in editingAttachments" :key="i">
+              <div v-if="a.type === 'image' && a.data_uri" class="att-card image" @click="lightboxUrl = a.data_uri">
+                <img :src="a.data_uri" />
+                <button class="att-x" @click.stop="removeEditAttachment(m, i)">✕</button>
+              </div>
+              <div v-else-if="a.type === 'text' || a.type === 'file'" class="att-card" @click="a.type === 'text' && openTextPreview(a, 'preview', true)">
+                <div v-if="attIsTextPreviewable(a.filename)" class="att-preview">{{ (a.preview || '').slice(0, 80) }}</div>
+                <div v-else class="att-name">{{ truncFilename(a.filename) }}</div>
+                <div class="att-meta">
+                  <span class="att-fmt">{{ attFormat(a.filename) }}</span>
+                  <span class="att-size">{{ formatSize(a.size) }}</span>
+                </div>
+                <button class="att-x" @click.stop="removeEditAttachment(m, i)">✕</button>
+              </div>
+            </template>
+          </div>
+          <div class="msg-edit-actions">
+            <button @click="cancelEdit">Cancel</button>
+            <button class="primary" @click="saveEdit(m)">Save & resend</button>
+          </div>
+        </div>
+        <template v-else>
+          <!-- Saved tool events: collapsed by default. Click the chevron to expand. -->
+          <div v-if="m.role === 'assistant' && m.tool_events && m.tool_events.length"
+               class="tools-collapsible" :class="{ open: isToolsExpanded(m) }">
+            <button class="tools-toggle" @click="toggleTools(m)" :title="isToolsExpanded(m) ? 'Hide tool calls' : 'Show tool calls'">
+              <span class="chev">▸</span>
+              <span>🔧 Used {{ m.tool_events.length }} tool{{ m.tool_events.length === 1 ? '' : 's' }}</span>
+            </button>
+            <div v-if="isToolsExpanded(m)" class="tools-list">
+              <div v-for="t in m.tool_events" :key="t.toolCallId"
+                   class="tool-progress" :class="{ completed: t.status === 'completed' }">
+                {{ t.emoji }} {{ t.status === 'completed' ? 'Done:' : 'Running' }} {{ t.tool || t.name }}: {{ t.label }}
+              </div>
+            </div>
+          </div>
+          <div class="bubble" v-html="renderMarkdown(m.content)"></div>
+        </template>
+        <div v-if="editingMessageId !== m.id && m.attachments && m.attachments.length" class="msg-attachments">
+          <template v-for="(a, i) in m.attachments" :key="i">
+            <img v-if="a.type === 'image' && a.data_uri" class="thumb-img" :src="a.data_uri" @click="lightboxUrl = a.data_uri" />
+            <div v-else-if="a.type === 'text' || a.type === 'file'" class="att-card" @click="a.type === 'text' && openTextPreview(a, 'preview', false)">
+              <div v-if="attIsTextPreviewable(a.filename)" class="att-preview">{{ (a.preview || '').slice(0, 80) }}</div>
+              <div v-else class="att-name">{{ truncFilename(a.filename) }}</div>
+              <div class="att-meta">
+                <span class="att-fmt">{{ attFormat(a.filename) }}</span>
+                <span class="att-size">{{ formatSize(a.size) }}</span>
+              </div>
+            </div>
+          </template>
+        </div>
+        <div v-if="editingMessageId !== m.id" class="msg-actions">
+          <span v-if="m.created_at" class="msg-timestamp" :title="formatTimestamp(m.created_at, true)">{{ formatTimestamp(m.created_at) }}</span>
+          <button class="icon-action" @click="copyMessage(m)" title="Copy">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          </button>
+          <button v-if="m.role === 'user'" class="icon-action" @click="startEdit(m)" title="Edit">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+          </button>
+          <span v-if="m.role === 'user' && m.version_count && m.version_count > 1" class="version-nav">
+            <button class="icon-action" @click="switchVersion(m, -1)" :disabled="(m.version_index ?? 0) === 0" title="Previous version">‹</button>
+            <span class="version-counter">{{ (m.version_index ?? 0) + 1 }}/{{ m.version_count }}</span>
+            <button class="icon-action" @click="switchVersion(m, +1)" :disabled="(m.version_index ?? 0) >= m.version_count - 1" title="Next version">›</button>
+          </span>
+        </div>
+      </div>
+
+      <!-- Live streaming assistant -->
+      <div v-if="liveAssistant.visible" class="msg-row assistant">
+        <div v-for="t in liveAssistant.tools" :key="t.toolCallId"
+             class="tool-progress" :class="{ completed: t.status === 'completed' }">
+          {{ t.emoji }} {{ t.status === 'completed' ? 'Done:' : 'Running' }} {{ t.name }}: {{ t.label }}
+        </div>
+        <div class="bubble" :class="{ 'cursor-blink': streaming }" v-html="renderMarkdown(liveAssistant.content)"></div>
+      </div>
+    </div>
+  `,
+};
+
 const App = {
+  components: { MessageList },
   setup() {
     const chats = ref([]);
     const chatsCursor = ref(null);   // pagination cursor for next page (null = no more)
@@ -1693,6 +1795,18 @@ Continue changing the agent wallet?`,
       for (const f of files) await attachFile(f);
     }
 
+    // Share everything the message list needs with the MessageList child
+    // component via provide/inject. The message list lives in its own child
+    // component so that typing in the composer (which mutates `draft` in THIS
+    // parent) no longer re-renders the 1000s of message bubbles — the child
+    // only re-renders when its props (messages/liveAssistant/streaming) change.
+    provide('msgCtx', {
+      editingMessageId, editingValue, editingAttachments, lightboxUrl,
+      removeEditAttachment, openTextPreview, attIsTextPreviewable, truncFilename,
+      attFormat, formatSize, cancelEdit, saveEdit, isToolsExpanded, toggleTools,
+      renderMarkdown, copyMessage, startEdit, switchVersion, formatTimestamp,
+    });
+
     return {
       // state
       chats, activeChatId, messages, models, selectedModel, modelMenuOpen, activeModelTip, draft, draftAttachments,
@@ -1831,87 +1945,7 @@ Continue changing the agent wallet?`,
             <h2>PumpApi Agent</h2>
             <div>What do you want done today?</div>
           </div>
-          <div v-else class="msg-list">
-            <div v-for="m in messages" :key="m.id" class="msg-row" :class="m.role">
-              <div v-if="editingMessageId === m.id" class="msg-edit bubble">
-                <textarea v-model="editingValue"></textarea>
-                <div v-if="editingAttachments.length" class="msg-attachments">
-                  <template v-for="(a, i) in editingAttachments" :key="i">
-                    <div v-if="a.type === 'image' && a.data_uri" class="att-card image" @click="lightboxUrl = a.data_uri">
-                      <img :src="a.data_uri" />
-                      <button class="att-x" @click.stop="removeEditAttachment(m, i)">✕</button>
-                    </div>
-                    <div v-else-if="a.type === 'text' || a.type === 'file'" class="att-card" @click="a.type === 'text' && openTextPreview(a, 'preview', true)">
-                      <div v-if="attIsTextPreviewable(a.filename)" class="att-preview">{{ (a.preview || '').slice(0, 80) }}</div>
-                      <div v-else class="att-name">{{ truncFilename(a.filename) }}</div>
-                      <div class="att-meta">
-                        <span class="att-fmt">{{ attFormat(a.filename) }}</span>
-                        <span class="att-size">{{ formatSize(a.size) }}</span>
-                      </div>
-                      <button class="att-x" @click.stop="removeEditAttachment(m, i)">✕</button>
-                    </div>
-                  </template>
-                </div>
-                <div class="msg-edit-actions">
-                  <button @click="cancelEdit">Cancel</button>
-                  <button class="primary" @click="saveEdit(m)">Save & resend</button>
-                </div>
-              </div>
-              <template v-else>
-                <!-- Saved tool events: collapsed by default. Click the chevron to expand. -->
-                <div v-if="m.role === 'assistant' && m.tool_events && m.tool_events.length"
-                     class="tools-collapsible" :class="{ open: isToolsExpanded(m) }">
-                  <button class="tools-toggle" @click="toggleTools(m)" :title="isToolsExpanded(m) ? 'Hide tool calls' : 'Show tool calls'">
-                    <span class="chev">▸</span>
-                    <span>🔧 Used {{ m.tool_events.length }} tool{{ m.tool_events.length === 1 ? '' : 's' }}</span>
-                  </button>
-                  <div v-if="isToolsExpanded(m)" class="tools-list">
-                    <div v-for="t in m.tool_events" :key="t.toolCallId"
-                         class="tool-progress" :class="{ completed: t.status === 'completed' }">
-                      {{ t.emoji }} {{ t.status === 'completed' ? 'Done:' : 'Running' }} {{ t.tool || t.name }}: {{ t.label }}
-                    </div>
-                  </div>
-                </div>
-                <div class="bubble" v-html="renderMarkdown(m.content)"></div>
-              </template>
-              <div v-if="editingMessageId !== m.id && m.attachments && m.attachments.length" class="msg-attachments">
-                <template v-for="(a, i) in m.attachments" :key="i">
-                  <img v-if="a.type === 'image' && a.data_uri" class="thumb-img" :src="a.data_uri" @click="lightboxUrl = a.data_uri" />
-                  <div v-else-if="a.type === 'text' || a.type === 'file'" class="att-card" @click="a.type === 'text' && openTextPreview(a, 'preview', false)">
-                    <div v-if="attIsTextPreviewable(a.filename)" class="att-preview">{{ (a.preview || '').slice(0, 80) }}</div>
-                    <div v-else class="att-name">{{ truncFilename(a.filename) }}</div>
-                    <div class="att-meta">
-                      <span class="att-fmt">{{ attFormat(a.filename) }}</span>
-                      <span class="att-size">{{ formatSize(a.size) }}</span>
-                    </div>
-                  </div>
-                </template>
-              </div>
-              <div v-if="editingMessageId !== m.id" class="msg-actions">
-                <span v-if="m.created_at" class="msg-timestamp" :title="formatTimestamp(m.created_at, true)">{{ formatTimestamp(m.created_at) }}</span>
-                <button class="icon-action" @click="copyMessage(m)" title="Copy">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-                </button>
-                <button v-if="m.role === 'user'" class="icon-action" @click="startEdit(m)" title="Edit">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
-                </button>
-                <span v-if="m.role === 'user' && m.version_count && m.version_count > 1" class="version-nav">
-                  <button class="icon-action" @click="switchVersion(m, -1)" :disabled="(m.version_index ?? 0) === 0" title="Previous version">‹</button>
-                  <span class="version-counter">{{ (m.version_index ?? 0) + 1 }}/{{ m.version_count }}</span>
-                  <button class="icon-action" @click="switchVersion(m, +1)" :disabled="(m.version_index ?? 0) >= m.version_count - 1" title="Next version">›</button>
-                </span>
-              </div>
-            </div>
-
-            <!-- Live streaming assistant -->
-            <div v-if="liveAssistant.visible" class="msg-row assistant">
-              <div v-for="t in liveAssistant.tools" :key="t.toolCallId"
-                   class="tool-progress" :class="{ completed: t.status === 'completed' }">
-                {{ t.emoji }} {{ t.status === 'completed' ? 'Done:' : 'Running' }} {{ t.name }}: {{ t.label }}
-              </div>
-              <div class="bubble" :class="{ 'cursor-blink': streaming }" v-html="renderMarkdown(liveAssistant.content)"></div>
-            </div>
-          </div>
+          <message-list v-else :messages="messages" :live-assistant="liveAssistant" :streaming="streaming"></message-list>
         </div>
 
         <!-- Floating "Reply" button shown above any text selection in the chat area -->
