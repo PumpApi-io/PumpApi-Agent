@@ -62,7 +62,7 @@ function mediaToHtml(absPath) {
   if (MEDIA_IMG_EXT.has(ext)) {
     return `<img class="thumb-img media-attachment" src="${url}" data-fullsrc="${url}" alt="${escapeHtml(filename)}" />`;
   }
-  return `<a class="att-pill" href="${url}" target="_blank" rel="noopener">📎 ${escapeHtml(filename)}</a>`;
+  return `<a class="att-pill" href="${url}" download="${escapeHtml(filename)}" target="_blank" rel="noopener">📎 ${escapeHtml(filename)}</a>`;
 }
 
 // Memoize rendered markdown keyed by the raw text. This is the hot path:
