@@ -390,6 +390,13 @@ const App = {
     const skillsLoading = ref(false);
     const skillImporter = ref(null); // {source, name, content, url, busy}
     const skillPreview = ref(null);   // {name, content}
+    // Skills sub-tabs: 'enabled' | 'disabled'. `skillsTabSnapshot` holds the set
+    // of skill names that belong in the CURRENT tab — it is captured when the tab
+    // is (re)entered, NOT recomputed live. That way toggling a skill flips its
+    // switch in place but the row does NOT vanish from the tab you're looking at;
+    // it only moves once you leave and come back to the tab.
+    const skillsTab = ref('enabled');
+    const skillsTabSnapshot = ref(new Set());
     // Tools (built-in toolsets)
     const toolPlatforms = [
       { key: 'api_server', label: 'Website' },
@@ -1425,7 +1432,21 @@ const App = {
     // Save a subset of settings keys (used by per-platform sub-modals). We POST
     // ALL settings — backend only restarts the gateway if a value actually
     // changed, so this is safe to call from any panel.
-    async function saveSection(label) {
+    //
+    // Linking a messenger restarts the agent to bring the gateway up, which
+    // stops any running bots/jobs — so we ask for confirmation first, in the
+    // same style as deleting a skill.
+    function saveSection(label) {
+      confirm.value = {
+        message: `Link ${label}?\n\n⚠️ The agent will restart to apply this. All running bots and background jobs will be stopped.`,
+        confirmLabel: 'Save and link',
+        onYes: () => {
+          confirm.value = null;
+          _doSaveSection(label);
+        },
+      };
+    }
+    async function _doSaveSection(label) {
       try {
         const r = await api('/api/settings', { method: 'POST', body: JSON.stringify({ ...settings }) });
         const changed = (r && r.updated) || [];
@@ -1582,12 +1603,37 @@ Continue changing the agent wallet?`,
     }
 
     // ---- Skills ----
+    // Recompute which skills belong in the active tab and snapshot their names.
+    // Called on (re)entering the panel and on switching tab — but NOT on toggle,
+    // so a flipped skill stays put until the user revisits the tab.
+    function refreshSkillsSnapshot() {
+      const want = skillsTab.value === 'disabled';
+      skillsTabSnapshot.value = new Set(
+        skillsList.value.filter(s => !s.enabled === want).map(s => s.name)
+      );
+    }
+    // Rows shown in the current tab = members of the snapshot. We read the live
+    // skill objects (so the toggle reflects current state) but membership is
+    // frozen to the snapshot taken when the tab was entered.
+    const visibleSkills = computed(() =>
+      skillsList.value.filter(s => skillsTabSnapshot.value.has(s.name))
+    );
+    const disabledSkillsCount = computed(() =>
+      skillsList.value.filter(s => !s.enabled).length
+    );
+    function selectSkillsTab(tab) {
+      if (skillsTab.value === tab) return;
+      skillsTab.value = tab;
+      refreshSkillsSnapshot();
+    }
     async function openSkills() {
       panel.value = 'skills';
       skillsLoading.value = true;
+      skillsTab.value = 'enabled';
       try {
         const r = await api('/api/skills');
-        skillsList.value = r.items || [];
+        skillsList.value = (r.items || []).map(s => ({ ...s, enabled: s.enabled !== false, toggling: false }));
+        refreshSkillsSnapshot();
       } catch (e) {
         toast(`Failed to load skills: ${e.message || e}`, 'error');
       } finally {
@@ -1693,6 +1739,28 @@ Continue changing the agent wallet?`,
           }
         },
       };
+    }
+    // Enable/disable a skill without deleting it. Flips the switch in place
+    // immediately; the row does NOT leave the current tab (snapshot is frozen).
+    // Toggling is instant — no agent restart, no confirmation needed.
+    async function toggleSkill(s) {
+      if (s.toggling) return;
+      const next = !s.enabled;
+      const verb = next ? 'Enable' : 'Disable';
+      s.toggling = true;
+      s.enabled = next;            // flip the switch in place right away
+      try {
+        await api(`/api/skills/${encodeURIComponent(s.name)}/toggle`, {
+          method: 'POST',
+          body: JSON.stringify({ enabled: next }),
+        });
+        toast(next ? 'Skill enabled' : 'Skill disabled');
+      } catch (e) {
+        s.enabled = !next;          // rollback the switch on failure
+        toast(`${verb} failed: ${e.message || e}`, 'error');
+      } finally {
+        s.toggling = false;
+      }
     }
 
     // ---- Tools ----
@@ -1819,6 +1887,7 @@ Continue changing the agent wallet?`,
       panel, messengerStatus, openAgentWallet, editAgentWallet, saveAgentWallet, cancelAgentWalletEdit,
       memEditor, openMemory, saveMemory,
       skillsList, skillsLoading, skillImporter, skillPreview,
+      skillsTab, visibleSkills, disabledSkillsCount, selectSkillsTab, toggleSkill,
       openSkills, viewSkill, saveSkillEdit, closeSkillPreview, startSkillImport, closeSkillImport, submitSkillImport, deleteSkill,
       toolPlatforms, selectedToolPlatform, toolsList, toolsLoading, openTools, selectToolPlatform, toggleTool,
       mcpList, mcpEmpty, mcpForm, openMcp, startMcpAdd, submitMcpAdd, removeMcp,
@@ -2295,16 +2364,24 @@ Continue changing the agent wallet?`,
         <div class="modal modal-wide" @click.stop>
           <h2>📚 Skills</h2>
           <p class="settings-hint">Skills are instructions the agent loads when relevant (a "how to do X" playbook). <button class="link-btn" @click="startSkillImport">+ Add skill</button></p>
+          <div class="tab-bar">
+            <button :class="{ active: skillsTab === 'enabled' }" @click="selectSkillsTab('enabled')">✓ Enabled</button>
+            <button :class="{ active: skillsTab === 'disabled' }" @click="selectSkillsTab('disabled')">✗ Disabled<span v-if="disabledSkillsCount" class="skill-cat" style="margin-left:6px">{{ disabledSkillsCount }}</span></button>
+          </div>
           <div v-if="skillsLoading" class="settings-hint">Loading…</div>
           <div v-else class="skills-list">
-            <div v-for="s in skillsList" :key="(s.category || '') + '/' + s.name" class="skill-row">
+            <div v-for="s in visibleSkills" :key="(s.category || '') + '/' + s.name" class="skill-row" :class="{ 'skill-off': !s.enabled }">
               <div class="skill-meta" @click="viewSkill(s.name)">
                 <div class="skill-name">{{ s.name }} <span v-if="s.category" class="skill-cat">{{ s.category }}</span><span v-if="s.bundled" class="skill-cat" title="Ships with the agent">bundled</span></div>
                 <div class="skill-desc">{{ s.description || '—' }}</div>
               </div>
+              <label class="skill-toggle" @click.stop :title="s.enabled ? 'Disable' : 'Enable'">
+                <input type="checkbox" :checked="s.enabled" :disabled="s.toggling" @change="toggleSkill(s)">
+                <span class="skill-toggle-slider"></span>
+              </label>
               <button class="icon-btn danger" @click.stop="deleteSkill(s.name)" title="Remove">🗑</button>
             </div>
-            <div v-if="!skillsList.length" class="settings-hint">No skills installed.</div>
+            <div v-if="!visibleSkills.length" class="settings-hint">{{ skillsTab === 'disabled' ? 'No disabled skills.' : 'No enabled skills.' }}</div>
           </div>
           <div class="modal-actions">
             <button @click="panel = null">Close</button>
