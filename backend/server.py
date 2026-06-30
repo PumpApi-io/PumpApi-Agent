@@ -1124,10 +1124,69 @@ def _parse_skill_frontmatter(path: Path) -> dict:
     return out
 
 
+def _read_disabled_skills() -> set[str]:
+    """Read the `skills.disabled` list from ~/.hermes/config.yaml. This is the
+    SAME key the `hermes skills config` menu toggles — a disabled skill keeps
+    its files on disk but the agent's loader skips it. Returns a set of names."""
+    try:
+        import yaml  # ships with hermes
+        cfg_path = HERMES_HOME / "config.yaml"
+        if not cfg_path.exists():
+            return set()
+        with cfg_path.open("r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        disabled = (cfg.get("skills") or {}).get("disabled") or []
+        if isinstance(disabled, str):
+            # Defensive: an earlier bad `config set` may have stored a JSON string.
+            import json
+            try:
+                disabled = json.loads(disabled)
+            except Exception:
+                disabled = []
+        return {str(x).strip() for x in disabled if str(x).strip()}
+    except Exception:
+        return set()
+
+
+def _set_skill_disabled(name: str, disabled: bool) -> None:
+    """Add/remove `name` in config.yaml's `skills.disabled` list, preserving the
+    rest of the config. Writes a proper YAML list (not a JSON string) so the
+    agent's loader parses it exactly like the `hermes skills config` menu does."""
+    import yaml
+    cfg_path = HERMES_HOME / "config.yaml"
+    cfg = {}
+    if cfg_path.exists():
+        with cfg_path.open("r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+    skills = cfg.get("skills")
+    if not isinstance(skills, dict):
+        skills = {}
+        cfg["skills"] = skills
+    cur = skills.get("disabled")
+    if isinstance(cur, str):
+        import json
+        try:
+            cur = json.loads(cur)
+        except Exception:
+            cur = []
+    if not isinstance(cur, list):
+        cur = []
+    names = [str(x).strip() for x in cur if str(x).strip()]
+    if disabled:
+        if name not in names:
+            names.append(name)
+    else:
+        names = [n for n in names if n != name]
+    skills["disabled"] = names
+    with cfg_path.open("w", encoding="utf-8") as f:
+        yaml.safe_dump(cfg, f, sort_keys=False, allow_unicode=True, default_flow_style=False)
+
+
 def _list_skills() -> list[dict]:
     out: list[dict] = []
     if not HERMES_SKILLS_DIR.exists():
         return out
+    disabled = _read_disabled_skills()
     # Bundled skills can't be uninstalled — load the manifest once and tag them
     # so the UI can hide/disable the Delete button.
     bundled_names: set[str] = set()
@@ -1152,6 +1211,7 @@ def _list_skills() -> list[dict]:
                 "category": "",
                 "description": fm.get("description", ""),
                 "bundled": nm in bundled_names,
+                "enabled": nm not in disabled,
             })
             continue
         # Category directory — list nested skills
@@ -1164,6 +1224,7 @@ def _list_skills() -> list[dict]:
                     "category": entry.name,
                     "description": fm.get("description", ""),
                     "bundled": nm in bundled_names,
+                    "enabled": nm not in disabled,
                 })
     return out
 
@@ -1281,6 +1342,33 @@ async def api_delete_skill(request: web.Request) -> web.Response:
     # warns the user about that before they confirm.
     await _restart_gateway()
     return web.json_response({"ok": True, "method": "rm"})
+
+
+async def api_toggle_skill(request: web.Request) -> web.Response:
+    """Enable/disable a skill WITHOUT deleting it. Flips the skill's membership
+    in config.yaml's `skills.disabled` list (same mechanism as the
+    `hermes skills config` menu), then restarts the gateway so the live agent
+    reloads its skill registry with the change applied. Files stay on disk, so
+    this is fully reversible."""
+    name = request.match_info.get("name", "")
+    sdir = _find_skill_dir(name)
+    if not sdir:
+        return web.json_response({"error": "not_found"}, status=404)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    enabled = bool(body.get("enabled", True))
+    # Use the resolved on-disk skill name so the key matches what the loader sees.
+    skill_name = name
+    try:
+        _set_skill_disabled(skill_name, disabled=not enabled)
+    except Exception as exc:
+        return web.json_response({"error": "write_failed", "detail": str(exc)}, status=500)
+    # No gateway restart needed: the agent re-reads config.yaml dynamically
+    # (config cache is keyed on file mtime/size), so the next request picks up
+    # the new disabled list on its own — without killing running bots/jobs.
+    return web.json_response({"ok": True, "enabled": enabled})
 
 
 # ---- Tools / MCP ---------------------------------------------------------
@@ -1895,6 +1983,7 @@ def create_app() -> web.Application:
     app.router.add_get("/api/skills", require_auth(api_list_skills))
     app.router.add_get("/api/skills/{name}", require_auth(api_get_skill))
     app.router.add_put("/api/skills/{name}", require_auth(api_update_skill))
+    app.router.add_post("/api/skills/{name}/toggle", require_auth(api_toggle_skill))
     app.router.add_post("/api/skills", require_auth(api_install_skill))
     app.router.add_delete("/api/skills/{name}", require_auth(api_delete_skill))
 
