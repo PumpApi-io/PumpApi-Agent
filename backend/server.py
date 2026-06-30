@@ -691,24 +691,12 @@ async def api_get_upload(request: web.Request) -> web.StreamResponse:
     return web.FileResponse(safe)
 
 
-# Whitelist of file extensions that can be served via /api/media. Mirrors what
-# the assistant might emit via "MEDIA:/abs/path" (images, audio, video, common docs).
-MEDIA_EXT_ALLOWED = {
-    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg",
-    ".mp4", ".webm", ".mov",
-    ".mp3", ".ogg", ".wav", ".m4a",
-    ".txt", ".md", ".log", ".csv", ".json", ".yaml", ".yml", ".html", ".pdf",
+# Absolute files can be served via /api/media after require_auth.
+# Frontend decides presentation: image extensions render inline, everything else
+# is a download/open link. Keep only this explicit local secret blocked.
+MEDIA_FORBIDDEN_PATHS = {
+    Path("/root/.hermes/config.yaml").resolve(),
 }
-# Only allow reading from these prefixes. Anything else → 403, even if the path
-# resolves to a real file. This avoids leaking arbitrary host files via the cookie.
-MEDIA_PATH_PREFIXES = (
-    "/tmp/",
-    "/root/.hermes/cache/",
-    "/root/.hermes/audio_cache/",
-    "/root/.hermes/uploads/",
-    "/root/voice-memos/",
-    str(UPLOADS_DIR) + "/",
-)
 
 
 async def api_get_media(request: web.Request) -> web.StreamResponse:
@@ -725,11 +713,8 @@ async def api_get_media(request: web.Request) -> web.StreamResponse:
         resolved = Path(raw).resolve(strict=True)
     except (OSError, RuntimeError):
         raise web.HTTPNotFound()
-    p = str(resolved)
-    if not any(p == pref.rstrip("/") or p.startswith(pref) for pref in MEDIA_PATH_PREFIXES):
+    if resolved in MEDIA_FORBIDDEN_PATHS:
         raise web.HTTPForbidden(text="path not allowed")
-    if resolved.suffix.lower() not in MEDIA_EXT_ALLOWED:
-        raise web.HTTPForbidden(text="extension not allowed")
     if not resolved.is_file():
         raise web.HTTPNotFound()
     ctype, _ = mimetypes.guess_type(str(resolved))
