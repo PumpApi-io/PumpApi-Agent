@@ -130,12 +130,12 @@ hermes tools disable --platform telegram clarify
 hermes tools enable --platform api_server terminal # Hermes bug: actual enabled tools differ from hermes tools list --platform api_server until any tool is enabled or disabled.
 curl -fsSL https://claude.ai/install.sh | bash
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
-sudo tee root/.claude/settings.json > /dev/null <<'EOF'
+sudo tee /root/.claude/settings.json > /dev/null <<EOF
 {
   "model": "Claude-Medium",
   "env": {
     "ANTHROPIC_BASE_URL": "https://api.pumpapi.ai",
-    "ANTHROPIC_API_KEY": $PUMPAPI_API_KEY
+    "ANTHROPIC_API_KEY": "$PUMPAPI_API_KEY"
   }
 }
 EOF
