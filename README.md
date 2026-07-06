@@ -15,7 +15,7 @@
   ·
   <a href="https://pumpapi.ai/docs">Read the docs</a>
   ·
-  <a href="https://pumpapi.io">PumpApi.io API</a>
+  <a href="https://pumpapi.io">PumpApi.io pump.fun API</a>
 </p>
 
 <p align="center">
