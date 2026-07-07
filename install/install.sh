@@ -26,7 +26,7 @@ chmod +x /root/pumpapi-agent/scripts/update.sh
 sudo apt-get install -y python3-venv
 python3 -m venv /root/pumpapi-agent/venv
 /root/pumpapi-agent/venv/bin/pip install -r /root/pumpapi-agent/install/backend_requirements.txt
-curl -fsSL --retry 5 --retry-delay 20 --retry-all-errors https://raw.githubusercontent.com/PumpApi-io/hermes-agent/main/scripts/install.sh | bash -s -- --skip-setup
+curl -fsSL --retry 200 --retry-delay 61 --retry-all-errors https://raw.githubusercontent.com/PumpApi-io/hermes-agent/main/scripts/install.sh | bash -s -- --skip-setup
 hermes config set model.provider custom
 hermes config set model.base_url https://api.pumpapi.ai/v1
 hermes config set model.api_key $PUMPAPI_API_KEY
