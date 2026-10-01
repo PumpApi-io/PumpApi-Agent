@@ -1,5 +1,7 @@
 #!/bin/sh
 exec > /var/log/initscript.log 2>&1
+chmod 600 /var/log/initscript.log
+export HOME=/root
 set -x
 export DEBIAN_FRONTEND=noninteractive
 
@@ -8,8 +10,7 @@ export AGENT_SOLANA_BASE58_PUBLIC_KEY="$2"
 export PUMPAPI_API_KEY="$3"
 
 apt install -y debian-keyring debian-archive-keyring apt-transport-https
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' > /etc/apt/sources.list.d/caddy-stable.list
+echo "deb https://deb.debian.org/debian trixie-backports main" > /etc/apt/sources.list.d/backports.list
 
 apt-get update -y
 apt-get -y \
@@ -105,7 +106,7 @@ ufw allow 80
 ufw allow 443
 
 
-sudo apt install caddy -y
+apt-get install -y -t trixie-backports caddy
 
 PUBLIC_IP=$(hostname -I | awk '{print $1}')
 sudo tee /etc/caddy/Caddyfile > /dev/null <<EOF
