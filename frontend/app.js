@@ -1249,6 +1249,11 @@ const App = {
       if (data === '[DONE]') return;
       try {
         const obj = JSON.parse(data);
+        const errMsg = (obj.error && (obj.error.message || obj.error)) || obj.hermes?.error || '';
+        const reason = obj.choices?.[0]?.finish_reason;
+        if (errMsg || obj.hermes?.failed || reason === 'error') {
+          showError('Agent error', String(errMsg || 'The agent stopped with an error.'));
+        }
         const choices = obj.choices || [];
         if (choices.length) {
           const delta = choices[0].delta || {};
