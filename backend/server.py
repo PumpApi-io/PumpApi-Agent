@@ -314,6 +314,7 @@ def _row_to_chat(r: sqlite3.Row) -> dict:
         "created_at": r["created_at"],
         "updated_at": r["updated_at"],
         "model": r["model"] or "",
+        "running": r["id"] in _ACTIVE_STREAMS,
     }
 
 
@@ -1716,6 +1717,7 @@ async def _run_upstream_stream(
         except Exception:
             pass
         _ACTIVE_STREAMS.pop(chat_id, None)
+        _publish(chat_id, {"type": "messages_changed"})
 
 
 async def api_chat_stream(request: web.Request) -> web.StreamResponse:
