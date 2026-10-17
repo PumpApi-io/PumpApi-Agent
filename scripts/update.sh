@@ -2,6 +2,7 @@
 set -e
 
 cd /root/pumpapi-agent
+if [ "$(ss -Htn state established '( dport = :61317 )' | wc -l)" -gt 0 ]; then exit 0; fi
 before=$(git rev-parse HEAD)
 # git fetch ; git reset --hard origin/main # discard local changes and sync
 git pull --ff-only
