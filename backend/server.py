@@ -85,7 +85,23 @@ def _load_config() -> dict:
 
 CONFIG = _load_config()
 HERMES_URL = f"http://{CONFIG['API_SERVER_HOST']}:{CONFIG['API_SERVER_PORT']}/v1/chat/completions"
+HERMES_HEALTH_URL = f"http://{CONFIG['API_SERVER_HOST']}:{CONFIG['API_SERVER_PORT']}/health"
 
+
+async def _wait_for_hermes(timeout_s: float = 30) -> bool:
+    """Wait until hermes-gateway is up and answering (e.g. right after a restart)."""
+    deadline = time.monotonic() + timeout_s
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=2)) as s:
+        while True:
+            try:
+                async with s.get(HERMES_HEALTH_URL) as r:
+                    if r.status == 200:
+                        return True
+            except (aiohttp.ClientError, asyncio.TimeoutError):
+                pass
+            if time.monotonic() >= deadline:
+                return False
+            await asyncio.sleep(0.25)
 # ---------------------------------------------------------------------------
 # Database
 # ---------------------------------------------------------------------------
@@ -869,6 +885,7 @@ async def api_set_model(request: web.Request) -> web.Response:
     ok2, msg2 = await _run("systemctl", "restart", "hermes-gateway", timeout=90)
     if not ok2:
         return web.json_response({"error": "restart_failed", "detail": msg2}, status=500)
+    await _wait_for_hermes()
     return web.json_response({"ok": True, "model": model})
 
 
@@ -1614,6 +1631,7 @@ async def _run_upstream_stream(
     last_persist = time.time()
     timeout = aiohttp.ClientTimeout(total=None, sock_read=600)
     try:
+        await _wait_for_hermes()
         async with aiohttp.ClientSession(timeout=timeout) as sess:
             async with sess.post(HERMES_URL, json=payload, headers=headers) as upstream:
                 if upstream.status != 200:
