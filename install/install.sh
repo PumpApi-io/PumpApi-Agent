@@ -39,6 +39,9 @@ hermes config set providers.pumpapi.base_url https://api.pumpapi.ai/v1
 hermes config set providers.pumpapi.api_key $PUMPAPI_API_KEY
 hermes config set providers.pumpapi.discover_models true
 hermes config set prompt_caching.cache_ttl 1h
+hermes config set agent.max_turns 10000
+hermes config set delegation.max_iterations 10000
+hermes config set --force platform_hints.api_server.replace "You're responding through the PumpAPI Agent web chat. It renders Markdown. Files referenced as MEDIA:/absolute/path tags are delivered to the user: images are shown inline, other files appear as a download link."
 sudo tee /root/.hermes/.env > /dev/null <<EOF
 API_SERVER_ENABLED=true
 API_SERVER_HOST=127.0.0.1
