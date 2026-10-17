@@ -191,7 +191,7 @@ const MessageList = {
               </div>
             </div>
           </div>
-          <div class="bubble" v-html="renderMarkdown(m.content)"></div>
+          <div class="bubble" :class="{ 'cursor-blink': streaming && !liveAssistant.visible && m.role === 'assistant' && m === messages[messages.length - 1] }" v-html="renderMarkdown(m.content)"></div>
         </template>
         <div v-if="editingMessageId !== m.id && m.attachments && m.attachments.length" class="msg-attachments">
           <template v-for="(a, i) in m.attachments" :key="i">
@@ -734,34 +734,35 @@ const App = {
     // navigates away. One handle, replaced on each openChat.
     let pollHandle = null;
     function stopPolling() {
-      if (pollHandle) { clearInterval(pollHandle); pollHandle = null; }
+      if (pollHandle) { clearInterval(pollHandle); pollHandle = null; streaming.value = false;}
     }
     function startPollingFor(chatId) {
       stopPolling();
-      let lastLen = -1;
-      let stableTicks = 0;
-      let ticks = 0;
+      streaming.value = true;
+      let fails = 0;
       pollHandle = setInterval(async () => {
-        ticks += 1;
-        if (activeChatId.value !== chatId || streaming.value || ticks > 600) {
+        if (activeChatId.value !== chatId) {
           stopPolling();
           return;
         }
         try {
-          const ms = await api(`/api/chats/${chatId}/messages`);
-          messages.value = ms;
-          const last = ms[ms.length - 1];
-          if (!last || last.role !== 'assistant') { stopPolling(); return; }
-          const len = (last.content || '').length;
-          if (len === lastLen) {
-            stableTicks += 1;
-            if (stableTicks >= 3) stopPolling();
-          } else {
-            stableTicks = 0;
-            lastLen = len;
+          const info = await api(`/api/chats/${chatId}`);
+          messages.value = await api(`/api/chats/${chatId}/messages`);
+          fails = 0;
+          await nextTick();
+          scrollToBottom();
+          if (!info.running) {
+            stopPolling();
+            refreshChat(chatId);
           }
-        } catch (e) { /* keep trying */ }
-      }, 1000);
+        } catch (e) {
+          fails += 1;
+          if (fails >= 20) {
+            stopPolling();
+            showError('Connection error', 'Server is unreachable');
+          }
+        }
+      }, 1500);
     }
 
     // Live updates from the backend (notify.py writes -> SSE event -> we
@@ -804,18 +805,14 @@ const App = {
       liveAssistant.content = '';
       liveAssistant.tools = [];
       try {
-        const ms = await api(`/api/chats/${id}/messages`);
+        const ms = await api('/api/chats/' + id + '/messages');
         messages.value = ms;
         await nextTick();
         scrollToBottom(true);
         startEventStreamFor(id);
-        // If the tail is an assistant message that may still be streaming on
-        // the backend (recent + reasonable length is allowed to grow), poll
-        // until it stops changing.
-        const last = ms[ms.length - 1];
-        if (last && (Date.now() / 1000 - (last.created_at || 0) < 300)) {
-          startPollingFor(id);
-        }
+        // Ask the server whether the agent is still working in this chat.
+        const info = await api('/api/chats/' + id);
+        if (info.running) startPollingFor(id);
       } catch (e) { /* ignore */ }
     }
 
@@ -1113,6 +1110,7 @@ const App = {
       errorBanner.value = null;
 
       abortController = new AbortController();
+      let lostConnection = false;
       try {
         if (!activeChatId.value) {
           const r = await api('/api/chats', { method: 'POST', body: JSON.stringify({ model: selectedModel.value }) });
@@ -1170,11 +1168,14 @@ const App = {
       } catch (e) {
         if (e.name !== 'AbortError') {
           console.error('stream error', e);
-          if (!errorBanner.value) {
-            showError('Connection error', e.message || String(e));
-          }
+          lostConnection = true;
         }
       } finally {
+        if (lostConnection && activeChatId.value) {
+          liveAssistant.visible = false;
+          startPollingFor(activeChatId.value);
+          return;
+        }
         streaming.value = false;
         abortController = null;
         const gotContent = (liveAssistant.content || '').trim().length > 0;
