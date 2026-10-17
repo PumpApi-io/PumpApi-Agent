@@ -113,6 +113,10 @@ sudo tee /etc/caddy/Caddyfile > /dev/null <<EOF
 {
 	auto_https disable_redirects
 
+	servers {
+		protocols h1 h2
+	}
+
 	cert_issuer acme {
 		profile shortlived
 	}
