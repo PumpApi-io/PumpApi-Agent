@@ -8,6 +8,8 @@ marked.setOptions({
   breaks: true,
   gfm: true,
 });
+const COPY_ICON = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
+const CHECK_ICON = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`;
 const renderer = new marked.Renderer();
 const origCode = renderer.code.bind(renderer);
 renderer.code = function (code, lang) {
@@ -21,7 +23,7 @@ renderer.code = function (code, lang) {
   } catch (e) {
     highlighted = origCode(code, lang);
   }
-  return `<pre><code class="hljs language-${lang || ''}">${highlighted}</code></pre>`;
+  return `<div class="code-wrap"><button class="code-copy" type="button">${COPY_ICON}</button><pre><code class="hljs language-${lang || ''}">${highlighted}</code></pre></div>`;
 };
 marked.use({ renderer });
 
@@ -1366,6 +1368,19 @@ const App = {
     // inline MEDIA: image rendered via v-html, open it in the lightbox.
     function onChatClick(ev) {
       const t = ev.target;
+      const btn = t.closest('.code-copy');
+      if (btn) {
+        const text = btn.parentElement.querySelector('code').textContent;
+        navigator.clipboard.writeText(text).then(() => {
+          btn.innerHTML = CHECK_ICON;
+          btn.classList.add('copied');
+          setTimeout(() => {
+            btn.innerHTML = COPY_ICON;
+            btn.classList.remove('copied');
+          }, 1000);
+        });
+        return;
+      }
       if (t && t.tagName === 'IMG' && t.classList.contains('media-attachment')) {
         const url = t.getAttribute('data-fullsrc') || t.getAttribute('src');
         if (url) lightboxUrl.value = url;
